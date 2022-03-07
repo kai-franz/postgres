@@ -46,7 +46,9 @@ OBJS += \
 # Code generation
 OBJS += \
 	llvmjit_deform.o \
-	llvmjit_expr.o
+	llvmjit_expr.o \
+	llvmjit_filter.o
+
 
 all: all-shared-lib llvmjit_types.bc
 
@@ -62,6 +64,8 @@ install-types: llvmjit_types.bc
 
 uninstall-types:
 	rm -f '$(DESTDIR)$(pkglibdir)/llvmjit_types.bc'
+
+test: tester.o
 
 include $(top_srcdir)/src/Makefile.shlib
 
