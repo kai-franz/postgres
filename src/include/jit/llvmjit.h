@@ -113,7 +113,7 @@ extern bool llvm_compile_expr(struct ExprState *state);
 struct TupleTableSlotOps;
 extern LLVMValueRef slot_compile_deform(struct LLVMJitContext *context, TupleDesc desc,
 										const struct TupleTableSlotOps *ops, int natts);
-
+extern LLVMValueRef build_filter(struct ExprState *state, int opno, char **funcname_p);
 /*
  ****************************************************************************
  * Extensions / Backward compatibility section of the LLVM C API

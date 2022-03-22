@@ -224,6 +224,12 @@ ExecInitQual(List *qual, PlanState *parent)
 	state->parent = parent;
 	state->ext_params = NULL;
 
+    if (qual != NULL) {
+      state->filters = palloc(sizeof(ExprStateEvalFunc) * list_length(qual));
+      state->filter_names = palloc(sizeof(char *) * list_length(qual));
+      state->qual_len = list_length(qual);
+    }
+
 	/* mark expression as to be used with ExecQual() */
 	state->flags = EEO_FLAG_IS_QUAL;
 

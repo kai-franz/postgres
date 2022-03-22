@@ -113,6 +113,14 @@ typedef struct ExprState
 
 	Datum	   *innermost_domainval;
 	bool	   *innermost_domainnull;
+    /* number of qual predicates */
+    int qual_len;
+
+    /* filter function names */
+    char **filter_names;
+
+    /* filter table */
+    ExprStateEvalFunc *filters;
 } ExprState;
 
 

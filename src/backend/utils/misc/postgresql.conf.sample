@@ -392,7 +392,7 @@
 #min_parallel_index_scan_size = 512kB
 #effective_cache_size = 4GB
 
-#jit_above_cost = 100000		# perform JIT compilation if available
+jit_above_cost = 10000000		# perform JIT compilation if available
 					# and query more expensive than this;
 					# -1 disables
 #jit_inline_above_cost = 500000		# inline small functions if query is
@@ -400,6 +400,12 @@
 #jit_optimize_above_cost = 500000	# use expensive JIT optimizations if
 					# query is more expensive than this;
 					# -1 disables
+
+# JIT debug options
+# jit_debugging_support = on
+jit_dump_bitcode = on
+# jit_expressions = on
+# jit_profiling_support = on
 
 # - Genetic Query Optimizer -
 
@@ -417,7 +423,7 @@
 #constraint_exclusion = partition	# on, off, or partition
 #cursor_tuple_fraction = 0.1		# range 0.0-1.0
 #from_collapse_limit = 8
-#jit = on				# allow JIT compilation
+jit = on				# allow JIT compilation s
 #join_collapse_limit = 8		# 1 disables collapsing of explicit
 					# JOIN clauses
 #plan_cache_mode = auto			# auto, force_generic_plan or
@@ -721,7 +727,7 @@
 #local_preload_libraries = ''
 #session_preload_libraries = ''
 #shared_preload_libraries = ''	# (change requires restart)
-#jit_provider = 'llvmjit'		# JIT library to use
+jit_provider = 'llvmjit'		# JIT library to use
 
 # - Other Defaults -
 
