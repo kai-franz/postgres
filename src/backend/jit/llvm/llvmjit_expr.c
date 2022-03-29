@@ -561,14 +561,16 @@ llvm_compile_expr(ExprState *state)
                       filter_args[2] = v_isnullp;
 //                      // Build filter call
                       LLVMValueRef v_filter_ind = l_int32_const(filternum);
-//                      LLVMTypeRef t_filter_table_type = l_ptr(llvm_pg_var_func_type("TypeExprStateEvalFunc"));
-                      LLVMTypeRef t_filter_table_type = l_ptr(LLVMInt8Type());
+
+//                      LLVMTypeRef t_filter_fn_type =
+                      LLVMTypeRef t_filter_table_type = l_ptr(l_ptr(llvm_pg_var_func_type("TypeExprStateEvalFunc")));
+//                      LLVMTypeRef t_filter_table_type = l_ptr(LLVMInt8Type());
                       LLVMValueRef v_filter_table = l_ptr_const(state->filters,
                                                                 t_filter_table_type);
-//                      LLVMValueRef v_filter_fn_loaded = l_load_gep1(b, v_filter_table, v_filter_ind, "filter_addr");
-                      LLVMValueRef v_loaded = LLVMBuildLoad(b, v_filter_table, "filter_0_");
+                      LLVMValueRef v_filter_fn_loaded = l_load_gep1(b, v_filter_table, v_filter_ind, "filter_addr");
+//                      LLVMValueRef v_loaded = LLVMBuildLoad(b, v_filter_table, "filter_0_");
 //                      LLVMBuildCall(b, v_filter_fn_loaded, filter_args, 3, "filter_call");
-                      LLVMBuildCall(b, v_filter_fn, filter_args, 3, "filter_call");
+                      LLVMBuildCall(b, v_filter_fn_loaded, filter_args, 3, "filter_call");
                       LLVMBuildBr(b, opblocks[opno + 1]);
                       filternum++;
                       break;
@@ -2450,7 +2452,8 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	Assert(func);
 
 	/* remove indirection via this function for future calls */
-	state->evalfunc = func;
+	state->evalfunc = func; // TODO: change to filter manager
+//    state->exprfunc = func;
 
 	return func(state, econtext, isNull);
 }
