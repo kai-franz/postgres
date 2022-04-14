@@ -1,0 +1,11 @@
+make clean
+./my_configure.sh
+make
+make install
+$HOME/my_postgres/bin/initdb -D $HOME/my_postgres/data
+/Users/kaifranz/my_postgres/bin/pg_ctl -D /Users/kaifranz/my_postgres/data -l logfile start
+
+
+
+
+/Users/kaifranz/my_postgres/bin/pg_ctl -D /Users/kaifranz/my_postgres/data -l logfile stop
