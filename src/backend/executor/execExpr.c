@@ -223,6 +223,8 @@ ExecInitQual(List *qual, PlanState *parent)
 	state->expr = (Expr *) qual;
 	state->parent = parent;
 	state->ext_params = NULL;
+//    state->filters = palloc(sizeof(ExprStateEvalFunc) * list_length(qual));
+//    state->filter_names = palloc(sizeof(char *) * list_length(qual));
 
     int num_funcs;
     if (qual != NULL) {

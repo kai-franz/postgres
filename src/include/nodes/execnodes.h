@@ -42,6 +42,15 @@ struct RangeTblEntry;			/* avoid including parsenodes.h here */
 struct ExprEvalStep;			/* avoid including execExpr.h everywhere */
 struct CopyMultiInsertBuffer;
 
+//    /* number of qual predicates */
+//    int qual_len;
+//
+//    /* filter function names */
+//    char **filter_names;
+//
+//    /* filter table */
+//    ExprStateEvalFunc *filters;
+
 
 /* ----------------
  *		ExprState node
