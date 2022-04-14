@@ -224,11 +224,20 @@ ExecInitQual(List *qual, PlanState *parent)
 	state->parent = parent;
 	state->ext_params = NULL;
 
+    int num_funcs;
     if (qual != NULL) {
-      state->filters = palloc(sizeof(ExprStateEvalFunc) * list_length(qual));
-      state->filter_names = palloc(sizeof(char *) * list_length(qual));
+      num_funcs = list_length(qual) + 2;
+      state->filters = palloc(sizeof(ExprStateEvalFunc) * list_length(qual) * 2);
+      state->filter_names = palloc(sizeof(char *) * list_length(qual) * 2);
       state->qual_len = list_length(qual);
+    } else {
+      num_funcs = 2;
     }
+    state->filter_starts = palloc(sizeof(int) * num_funcs);
+    state->filter_ends = palloc(sizeof(int) * num_funcs);
+    state->clauses = palloc(sizeof(ExprStateEvalFunc) * num_funcs);
+    state->clause_names = palloc(sizeof(char *) * num_funcs);
+    state->num_funcs = num_funcs;
 
 	/* mark expression as to be used with ExecQual() */
 	state->flags = EEO_FLAG_IS_QUAL;
@@ -251,10 +260,14 @@ ExecInitQual(List *qual, PlanState *parent)
 	scratch.resvalue = &state->resvalue;
 	scratch.resnull = &state->resnull;
 
+
+    state->filter_starts[0] = 0;
+    state->filter_ends[0] = state->steps_len;
+    int clause_num = 1;
 	foreach(lc, qual)
 	{
 		Expr	   *node = (Expr *) lfirst(lc);
-
+        state->filter_starts[clause_num] = state->steps_len;
 		/* first evaluate expression */
 		ExecInitExprRec(node, state, &state->resvalue, &state->resnull);
 
@@ -263,7 +276,10 @@ ExecInitQual(List *qual, PlanState *parent)
 		ExprEvalPushStep(state, &scratch);
 		adjust_jumps = lappend_int(adjust_jumps,
 								   state->steps_len - 1);
+      state->filter_ends[clause_num] = state->steps_len;
+      clause_num++;
 	}
+    state->filter_starts[clause_num] = state->steps_len;
 
 	/* adjust jump targets */
 	foreach(lc, adjust_jumps)
@@ -282,6 +298,8 @@ ExecInitQual(List *qual, PlanState *parent)
 	 */
 	scratch.opcode = EEOP_DONE;
 	ExprEvalPushStep(state, &scratch);
+
+    state->filter_ends[clause_num] = state->steps_len;
 
 	ExecReadyExpr(state);
 

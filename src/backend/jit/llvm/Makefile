@@ -47,7 +47,8 @@ OBJS += \
 OBJS += \
 	llvmjit_deform.o \
 	llvmjit_expr.o \
-	llvmjit_filter.o
+	llvmjit_filter.o \
+	filter_manager.o
 
 
 all: all-shared-lib llvmjit_types.bc

@@ -113,14 +113,23 @@ typedef struct ExprState
 
 	Datum	   *innermost_domainval;
 	bool	   *innermost_domainnull;
-    /* number of qual predicates */
-    int qual_len;
 
+    /* number of clauses */
+    int qual_len;
     /* filter function names */
     char **filter_names;
-
     /* filter table */
     ExprStateEvalFunc *filters;
+    /* function for evaluating expression */
+    ExprStateEvalFunc exprfunc;
+    /* times expr has been evaluated */
+    int eval_count;
+    int num_funcs;
+    /* beginning and end of each filter clause. */
+    int *filter_starts;
+    int *filter_ends;
+    ExprStateEvalFunc *clauses;
+    char **clause_names;
 } ExprState;
 
 

@@ -71,6 +71,8 @@ static LLVMValueRef create_LifetimeEnd(LLVMModuleRef mod);
 					   ((LLVMValueRef[]){__VA_ARGS__}))
 
 
+Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull);
+
 /*
  * JIT compile expression.
  */
@@ -2396,6 +2398,14 @@ llvm_compile_expr(ExprState *state)
 
 	LLVMDisposeBuilder(b);
 
+    if (state->num_funcs > 0) {
+      for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
+        build_filter_test(state, clause_num);
+      }
+    }
+
+
+
 	/*
 	 * Don't immediately emit function, instead do so the first time the
 	 * expression is actually evaluated. That allows to emit a lot of
@@ -2403,7 +2413,6 @@ llvm_compile_expr(ExprState *state)
 	 * remapping overhead.
 	 */
 	{
-
 		CompiledExprState *cstate = palloc0(sizeof(CompiledExprState));
 
 		cstate->context = context;
@@ -2448,14 +2457,29 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
                                                                   state->filter_names[filter_num]);
       Assert(filters[filter_num]);
     }
+
+    // clause functions
+
+    for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
+      state->clauses[clause_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
+                                                                         state->clause_names[clause_num]);
+    }
+
 	llvm_leave_fatal_on_oom();
 	Assert(func);
 
 	/* remove indirection via this function for future calls */
-	state->evalfunc = func; // TODO: change to filter manager
-//    state->exprfunc = func;
+    if (state->num_funcs > 0) {
+      state->evalfunc = &ExecWithFilterManager;
+      state->evalfunc = &ExecWithFilterManager; // TODO: change to filter manager
+      state->exprfunc = func;
+      return ExecWithFilterManager(state, econtext, isNull);
+    }
+    state->evalfunc = func;
+    return func(state, econtext, isNull);
 
-	return func(state, econtext, isNull);
+//    llvm_compile_expr_example(state);
+
 }
 
 static LLVMValueRef
