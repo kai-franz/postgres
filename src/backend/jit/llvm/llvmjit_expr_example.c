@@ -1,20 +1,3 @@
-/*-------------------------------------------------------------------------
- *
- * llvmjit_deform.c
- *	  Generate code for deforming a heap tuple.
- *
- * This gains performance benefits over unJITed deforming from compile-time
- * knowledge of the tuple descriptor. Fixed column widths, NOT NULLness, etc
- * can be taken advantage of.
- *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
- * Portions Copyright (c) 1994, Regents of the University of California
- *
- * IDENTIFICATION
- *	  src/backend/jit/llvm/llvmjit_deform.c
- *
- *-------------------------------------------------------------------------
- */
 
 #include "postgres.h"
 
@@ -145,11 +128,12 @@ BuildV1Call(LLVMJitContext *context, LLVMBuilderRef b,
   return v_retval;
 }
 
+
 /*
- * Create a function that deforms a tuple of type desc up to natts columns.
+ * JIT compile expression.
  */
-LLVMValueRef
-build_filter(ExprState *state, int opno_start, char **funcname_p)
+bool
+llvm_compile_expr_example(ExprState *state)
 {
   PlanState  *parent = state->parent;
   char	   *funcname;
@@ -214,12 +198,13 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
     parent->state->es_jit = &context->base;
   }
 
+  INSTR_TIME_SET_CURRENT(starttime);
+
   mod = llvm_mutable_module(context);
 
   b = LLVMCreateBuilder();
 
-  funcname = llvm_expand_funcname(context, "filter");
-  *funcname_p = funcname;
+  funcname = llvm_expand_funcname(context, "evalexpr");
 
   /* create function */
   eval_fn = LLVMAddFunction(mod, funcname,
@@ -295,25 +280,15 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
                                  FIELDNO_EXPRCONTEXT_AGGNULLS,
                                  "v.econtext.aggnulls");
 
-
-
-//  LLVMBasicBlockRef *opblock = palloc(sizeof(LLVMBasicBlockRef));
-//  *opblock = l_bb_append_v(eval_fn, "b.noop");
-//  LLVMBuildBr(b, *opblock);
-
-
   /* allocate blocks for each op upfront, so we can do jumps easily */
   opblocks = palloc(sizeof(LLVMBasicBlockRef) * state->steps_len);
-  for (int opno = opno_start; opno < opno_start + 2; opno++)
+  for (int opno = 0; opno < state->steps_len; opno++)
     opblocks[opno] = l_bb_append_v(eval_fn, "b.op.%d.start", opno);
 
   /* jump from entry to first block */
-  LLVMBuildBr(b, opblocks[opno_start]);
+  LLVMBuildBr(b, opblocks[0]);
 
-  bool filter = false;
-
-
-  for (int opno = opno_start; opno < opno_start + 2; opno++)
+  for (int opno = 0; opno < state->steps_len; opno++)
   {
     ExprEvalStep *op;
     ExprEvalOp	opcode;
@@ -327,27 +302,6 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
 
     v_resvaluep = l_ptr_const(op->resvalue, l_ptr(TypeSizeT));
     v_resnullp = l_ptr_const(op->resnull, l_ptr(TypeStorageBool));
-
-
-
-//    while (!filter && opno < state->steps_len) {
-//      op = &state->steps[opno];
-//      opcode = ExecEvalStepOp(state, op);
-//      if (opcode == EEOP_SCAN_VAR && opno < state->steps_len - 2) {
-//        ExprEvalStep *nextop = &state->steps[opno + 1];
-//        ExprEvalOp nextopcode = ExecEvalStepOp(state, nextop);
-//        if (nextopcode == EEOP_FUNCEXPR_STRICT) {
-//          nextop = &state->steps[opno + 2];
-//          nextopcode = ExecEvalStepOp(state, nextop);
-//          if (nextopcode == EEOP_QUAL) {
-//            filter = true;
-//          }
-//        }
-//      }
-//      if (!filter) {
-//        opno++;
-//      }
-//    }
 
     switch (opcode)
     {
@@ -643,9 +597,6 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMValueRef v_fcinfo_isnull;
         LLVMValueRef v_retval;
 
-
-        opcode = EEOP_FUNCEXPR;
-
         if (opcode == EEOP_FUNCEXPR_STRICT)
         {
           LLVMBasicBlockRef b_nonull;
@@ -719,9 +670,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMBuildStore(b, v_retval, v_resvaluep);
         LLVMBuildStore(b, v_fcinfo_isnull, v_resnullp);
 
-//        LLVMBuildBr(b, opblocks[opno + 1]);
-
-
+        LLVMBuildBr(b, opblocks[opno + 1]);
         break;
       }
 
@@ -2463,17 +2412,12 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
     }
   }
 
-//  LLVMValueRef v_tmpisnull;
-//  LLVMValueRef v_tmpvalue;
-//
-//  v_tmpvalue = LLVMBuildLoad(b, v_tmpvaluep, "");
-//  v_tmpisnull = LLVMBuildLoad(b, v_tmpisnullp, "");
-//
-//  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
-//
-//  LLVMBuildRet(b, v_tmpvalue);
-  LLVMValueRef v_zero64 = l_int64_const(0);
-  LLVMBuildRet(b, v_zero64);
   LLVMDisposeBuilder(b);
+  llvm_leave_fatal_on_oom();
+
+  INSTR_TIME_SET_CURRENT(endtime);
+  INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
+                        endtime, starttime);
+
   return eval_fn;
 }

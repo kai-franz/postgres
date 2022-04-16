@@ -2399,8 +2399,9 @@ llvm_compile_expr(ExprState *state)
 	LLVMDisposeBuilder(b);
 
     if (state->num_funcs > 0) {
+      build_filter_test(state, 0);
       for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
-        build_filter_test(state, clause_num);
+//        build_filter_test(state, clause_num);
       }
     }
 

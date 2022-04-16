@@ -1,20 +1,3 @@
-/*-------------------------------------------------------------------------
- *
- * llvmjit_deform.c
- *	  Generate code for deforming a heap tuple.
- *
- * This gains performance benefits over unJITed deforming from compile-time
- * knowledge of the tuple descriptor. Fixed column widths, NOT NULLness, etc
- * can be taken advantage of.
- *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
- * Portions Copyright (c) 1994, Regents of the University of California
- *
- * IDENTIFICATION
- *	  src/backend/jit/llvm/llvmjit_deform.c
- *
- *-------------------------------------------------------------------------
- */
 
 #include "postgres.h"
 
@@ -145,11 +128,8 @@ BuildV1Call(LLVMJitContext *context, LLVMBuilderRef b,
   return v_retval;
 }
 
-/*
- * Create a function that deforms a tuple of type desc up to natts columns.
- */
 LLVMValueRef
-build_filter(ExprState *state, int opno_start, char **funcname_p)
+build_filter_test(ExprState *state, int clause_num)
 {
   PlanState  *parent = state->parent;
   char	   *funcname;
@@ -218,8 +198,8 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
 
   b = LLVMCreateBuilder();
 
-  funcname = llvm_expand_funcname(context, "filter");
-  *funcname_p = funcname;
+  funcname = llvm_expand_funcname(context, "filter_test");
+  state->clause_names[clause_num] = funcname;
 
   /* create function */
   eval_fn = LLVMAddFunction(mod, funcname,
@@ -304,16 +284,16 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
 
   /* allocate blocks for each op upfront, so we can do jumps easily */
   opblocks = palloc(sizeof(LLVMBasicBlockRef) * state->steps_len);
-  for (int opno = opno_start; opno < opno_start + 2; opno++)
-    opblocks[opno] = l_bb_append_v(eval_fn, "b.op.%d.start", opno);
+  for (int opno = state->filter_starts[clause_num]; opno < state->filter_ends[clause_num] + 1; opno++)
+    opblocks[opno] = l_bb_append_v(eval_fn, "b.op.%d.start.clause.%d.test", opno, clause_num);
 
   /* jump from entry to first block */
-  LLVMBuildBr(b, opblocks[opno_start]);
+  LLVMBuildBr(b, opblocks[state->filter_starts[clause_num]]);
 
   bool filter = false;
 
 
-  for (int opno = opno_start; opno < opno_start + 2; opno++)
+  for (int opno = state->filter_starts[clause_num]; opno < state->filter_ends[clause_num]; opno++)
   {
     ExprEvalStep *op;
     ExprEvalOp	opcode;
@@ -377,7 +357,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         const TupleTableSlotOps *tts_ops = NULL;
 
         b_fetch = l_bb_before_v(opblocks[opno + 1],
-                                "op.%d.fetch", opno);
+                                "op.%d.clause.%d.fetch.test", opno, clause_num);
 
         if (op->d.fetch.known_desc)
           desc = op->d.fetch.known_desc;
@@ -446,7 +426,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
                         params, lengthof(params), "");
         }
 
-        LLVMBuildBr(b, opblocks[opno + 1]);
+//        LLVMBuildBr(b, opblocks[opno + 1]);
         break;
       }
 
@@ -592,7 +572,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
           LLVMValueRef v_params[1];
 
           b_notnull = l_bb_before_v(opblocks[opno + 1],
-                                    "op.%d.assign_tmp.notnull", opno);
+                                    "op.%d.assign_tmp.notnull.test", opno);
 
           /* check if value is NULL */
           LLVMBuildCondBr(b,
@@ -719,7 +699,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMBuildStore(b, v_retval, v_resvaluep);
         LLVMBuildStore(b, v_fcinfo_isnull, v_resnullp);
 
-//        LLVMBuildBr(b, opblocks[opno + 1]);
+        LLVMBuildBr(b, opblocks[opno + 1]);
 
 
         break;
@@ -961,7 +941,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMBasicBlockRef b_qualfail;
 
         b_qualfail = l_bb_before_v(opblocks[opno + 1],
-                                   "op.%d.qualfail", opno);
+                                   "op.%d.qualfail.clause.%d.test", opno, clause_num);
 
         v_resvalue = LLVMBuildLoad(b, v_resvaluep, "");
         v_resnull = LLVMBuildLoad(b, v_resnullp, "");
@@ -986,7 +966,9 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         /* set resvalue to false */
         LLVMBuildStore(b, l_sizet_const(0), v_resvaluep);
         /* and jump out */
-        LLVMBuildBr(b, opblocks[op->d.qualexpr.jumpdone]);
+        LLVMValueRef v_zero64 = l_int64_const(0);
+        LLVMBuildRet(b, v_zero64);
+        LLVMPositionBuilderAtEnd(b, opblocks[opno + 1]);
         break;
       }
 
@@ -1115,9 +1097,9 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMValueRef v_resnull = LLVMBuildLoad(b, v_resnullp, "");
 
         b_isnull = l_bb_before_v(opblocks[opno + 1],
-                                 "op.%d.isnull", opno);
+                                 "op.%d.isnull.test", opno);
         b_notnull = l_bb_before_v(opblocks[opno + 1],
-                                  "op.%d.isnotnull", opno);
+                                  "op.%d.isnotnull.test", opno);
 
         /* check if value is NULL */
         LLVMBuildCondBr(b,
@@ -1265,9 +1247,9 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMValueRef v_casevaluenull;
 
         b_avail = l_bb_before_v(opblocks[opno + 1],
-                                "op.%d.avail", opno);
+                                "op.%d.avail.test", opno);
         b_notavail = l_bb_before_v(opblocks[opno + 1],
-                                   "op.%d.notavail", opno);
+                                   "op.%d.notavail.test", opno);
 
         v_casevaluep = l_ptr_const(op->d.casetest.value,
                                    l_ptr(TypeSizeT));
@@ -1315,7 +1297,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMValueRef v_value;
 
         b_notnull = l_bb_before_v(opblocks[opno + 1],
-                                  "op.%d.readonly.notnull", opno);
+                                  "op.%d.readonly.notnull.test", opno);
 
         v_nullp = l_ptr_const(op->d.make_readonly.isnull,
                               l_ptr(TypeStorageBool));
@@ -1375,13 +1357,13 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         fcinfo_in = op->d.iocoerce.fcinfo_data_in;
 
         b_skipoutput = l_bb_before_v(opblocks[opno + 1],
-                                     "op.%d.skipoutputnull", opno);
+                                     "op.%d.skipoutputnull.test", opno);
         b_calloutput = l_bb_before_v(opblocks[opno + 1],
-                                     "op.%d.calloutput", opno);
+                                     "op.%d.calloutput.test", opno);
         b_input = l_bb_before_v(opblocks[opno + 1],
-                                "op.%d.input", opno);
+                                "op.%d.input.test", opno);
         b_inputcall = l_bb_before_v(opblocks[opno + 1],
-                                    "op.%d.inputcall", opno);
+                                    "op.%d.inputcall.test", opno);
 
         v_fn_out = llvm_function_reference(context, b, mod, fcinfo_out);
         v_fn_in = llvm_function_reference(context, b, mod, fcinfo_in);
@@ -1503,10 +1485,10 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMBasicBlockRef b_bothargnull;
         LLVMBasicBlockRef b_anyargnull;
 
-        b_noargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.noargnull", opno);
-        b_checkbothargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.checkbothargnull", opno);
-        b_bothargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.bothargnull", opno);
-        b_anyargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.anyargnull", opno);
+        b_noargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.noargnull.test", opno);
+        b_checkbothargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.checkbothargnull.test", opno);
+        b_bothargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.bothargnull.test", opno);
+        b_anyargnull = l_bb_before_v(opblocks[opno + 1], "op.%d.anyargnull.test", opno);
 
         v_fcinfo = l_ptr_const(fcinfo, l_ptr(StructFunctionCallInfoData));
 
@@ -1705,12 +1687,12 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMValueRef v_retval;
 
         b_null = l_bb_before_v(opblocks[opno + 1],
-                               "op.%d.row-null", opno);
+                               "op.%d.row-null.test", opno);
         b_compare = l_bb_before_v(opblocks[opno + 1],
-                                  "op.%d.row-compare", opno);
+                                  "op.%d.row-compare.test", opno);
         b_compare_result =
             l_bb_before_v(opblocks[opno + 1],
-                          "op.%d.row-compare-result",
+                          "op.%d.row-compare-result.test",
                           opno);
 
         /*
@@ -1878,9 +1860,9 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         LLVMValueRef v_casevaluenull;
 
         b_avail = l_bb_before_v(opblocks[opno + 1],
-                                "op.%d.avail", opno);
+                                "op.%d.avail.test", opno);
         b_notavail = l_bb_before_v(opblocks[opno + 1],
-                                   "op.%d.notavail", opno);
+                                   "op.%d.notavail.test", opno);
 
         v_casevaluep = l_ptr_const(op->d.casetest.value,
                                    l_ptr(TypeSizeT));
@@ -2037,7 +2019,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
           LLVMBasicBlockRef b_deserialize;
 
           b_deserialize = l_bb_before_v(opblocks[opno + 1],
-                                        "op.%d.deserialize", opno);
+                                        "op.%d.deserialize.test", opno);
 
           v_fcinfo = l_ptr_const(fcinfo,
                                  l_ptr(StructFunctionCallInfoData));
@@ -2096,7 +2078,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
         {
           b_checknulls[argno] =
               l_bb_before_v(opblocks[opno + 1],
-                            "op.%d.check-null.%d",
+                            "op.%d.check-null.%d.test",
                             opno, argno);
         }
 
@@ -2252,9 +2234,9 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
                                 "notransvalue");
 
           b_init = l_bb_before_v(opblocks[opno + 1],
-                                 "op.%d.inittrans", opno);
+                                 "op.%d.inittrans.test", opno);
           b_no_init = l_bb_before_v(opblocks[opno + 1],
-                                    "op.%d.no_inittrans", opno);
+                                    "op.%d.no_inittrans.test", opno);
 
           LLVMBuildCondBr(b,
                           LLVMBuildICmp(b, LLVMIntEQ, v_notransvalue,
@@ -2297,7 +2279,7 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
           LLVMBasicBlockRef b_strictpass;
 
           b_strictpass = l_bb_before_v(opblocks[opno + 1],
-                                       "op.%d.strictpass", opno);
+                                       "op.%d.strictpass.test", opno);
           v_transnull =
               l_load_struct_gep(b, v_pergroupp,
                                 FIELDNO_AGGSTATEPERGROUPDATA_TRANSVALUEISNULL,
@@ -2389,9 +2371,9 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
           LLVMValueRef params[6];
 
           b_call = l_bb_before_v(opblocks[opno + 1],
-                                 "op.%d.transcall", opno);
+                                 "op.%d.transcall.test", opno);
           b_nocall = l_bb_before_v(opblocks[opno + 1],
-                                   "op.%d.transnocall", opno);
+                                   "op.%d.transnocall.test", opno);
 
           v_transvalue = LLVMBuildLoad(b, v_transvaluep, "");
           v_transnull = LLVMBuildLoad(b, v_transnullp, "");
@@ -2472,8 +2454,16 @@ build_filter(ExprState *state, int opno_start, char **funcname_p)
 //  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
 //
 //  LLVMBuildRet(b, v_tmpvalue);
-  LLVMValueRef v_zero64 = l_int64_const(0);
-  LLVMBuildRet(b, v_zero64);
+  LLVMValueRef v_tmpisnull;
+  LLVMValueRef v_tmpvalue;
+
+  v_tmpvalue = LLVMBuildLoad(b, v_tmpvaluep, "");
+  v_tmpisnull = LLVMBuildLoad(b, v_tmpisnullp, "");
+
+  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
+
+  LLVMBuildRet(b, v_tmpvalue);
   LLVMDisposeBuilder(b);
   return eval_fn;
 }
+
