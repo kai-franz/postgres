@@ -2397,11 +2397,11 @@ llvm_compile_expr(ExprState *state)
 	}
 
 	LLVMDisposeBuilder(b);
-
+    LLVMValueRef clause_fn;
     if (state->num_funcs > 0) {
-      build_filter_test(state, 0);
+//      clause_fn = build_filter_test(state, 0);
       for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
-//        build_filter_test(state, clause_num);
+        build_filter_test(state, clause_num);
       }
     }
 
@@ -2453,17 +2453,21 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	func = (ExprStateEvalFunc) llvm_get_function(cstate->context,
 												 cstate->funcname);
     // Populate filter table
-    for (int filter_num = 0; filter_num < state->qual_len; filter_num++) {
-      state->filters[filter_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
-                                                                  state->filter_names[filter_num]);
-      Assert(filters[filter_num]);
-    }
+//    for (int filter_num = 0; filter_num < state->qual_len; filter_num++) {
+//      state->filters[filter_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
+//                                                                  state->filter_names[filter_num]);
+//      Assert(filters[filter_num]);
+//    }
 
     // clause functions
 
     for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
       state->clauses[clause_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
                                                                          state->clause_names[clause_num]);
+    }
+    // print out original clause ordering
+    for (int clause_num = 1; clause_num < state->num_funcs - 1; clause_num++) {
+      elog(LOG, "clause %d original address: %p\n", clause_num, state->clauses[clause_num]);
     }
 
 	llvm_leave_fatal_on_oom();
@@ -2472,9 +2476,8 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	/* remove indirection via this function for future calls */
     if (state->num_funcs > 0) {
       state->evalfunc = &ExecWithFilterManager;
-      state->evalfunc = &ExecWithFilterManager; // TODO: change to filter manager
       state->exprfunc = func;
-      return ExecWithFilterManager(state, econtext, isNull);
+      return state->evalfunc(state, econtext, isNull);
     }
     state->evalfunc = func;
     return func(state, econtext, isNull);

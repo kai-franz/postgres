@@ -23,7 +23,7 @@ PGFILEDESC = "llvmjit - JIT using LLVM"
 NAME = llvmjit
 
 # All files in this directory use LLVM.
-CFLAGS += $(LLVM_CFLAGS)
+CFLAGS += $(LLVM_CFLAGS) -O0
 CXXFLAGS += $(LLVM_CXXFLAGS)
 override CPPFLAGS := $(LLVM_CPPFLAGS) $(CPPFLAGS)
 SHLIB_LINK += $(LLVM_LIBS)

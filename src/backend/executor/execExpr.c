@@ -240,6 +240,9 @@ ExecInitQual(List *qual, PlanState *parent)
     state->clauses = palloc(sizeof(ExprStateEvalFunc) * num_funcs);
     state->clause_names = palloc(sizeof(char *) * num_funcs);
     state->num_funcs = num_funcs;
+    state->ranks = palloc(sizeof(double) * num_funcs);
+    state->times = palloc(sizeof(long double) * num_funcs);
+    state->clause_outputs = palloc0(sizeof(int) * num_funcs);
 
 	/* mark expression as to be used with ExecQual() */
 	state->flags = EEO_FLAG_IS_QUAL;

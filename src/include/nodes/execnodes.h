@@ -139,6 +139,12 @@ typedef struct ExprState
     int *filter_ends;
     ExprStateEvalFunc *clauses;
     char **clause_names;
+    int filter_mgr_idx;
+    long double *times;
+    int *clause_outputs;
+    double *ranks;
+    int reranks;
+    int nonreranks;
 } ExprState;
 
 

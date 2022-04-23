@@ -31,99 +31,102 @@
 #include "utils/typcache.h"
 #include "utils/xml.h"
 
+#include <time.h>
 
-double sample_freq = 0.0;
+#define SAMPLE_SIZE 1024
+#define SAMPLE_FREQ 0.2;
+
+void reorder_clauses(ExprState *state);
+Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull);
+bool should_rerank(ExprState *state);
 
 bool should_rerank(ExprState *state) {
-  return state->eval_count++ == 500000;
-//  return random() < RAND_MAX * sample_freq;
+  bool res = random() < (RAND_MAX / SAMPLE_SIZE) * SAMPLE_FREQ;
+  if (res) {
+    elog(LOG, "reranking");
+    state->reranks++;
+  } else {
+    state->nonreranks++;
+  }
+  return res;
 }
 
 Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull) {
-//  if (should_rerank(state) && state->qual_len != 0) {
-//    void *last_filter = state->filters[state->qual_len - 1];
-//    state->filters[state->qual_len - 1] = state->filters[0];
-//    state->filters[0] = last_filter;
-//  }
-//  return state->exprfunc(state, econtext, isNull);
-  int i = 0;
-  bool next_clause = true;
-  while (next_clause && i++ < state->qual_len + 1) {
-    next_clause = state->clauses[i](state, econtext, isNull);
-    next_clause = true; // TODO: remove this
+  if (state->filter_mgr_idx >= 0 || should_rerank(state)) {
+    clock_t start;
+    clock_t end;
+    Datum isTrue = 1;
+    int i = 0;
+    while (isTrue != 0 && i < state->num_funcs - 1) {
+      start = clock();
+      isTrue = state->clauses[i](state, econtext, isNull);
+      end = clock() - start;
+      long double elapsed = (long double) end / CLOCKS_PER_SEC;
+      state->times[i] += elapsed;
+      state->clause_outputs[i] += isTrue;
+      i++;
+    }
+    state->filter_mgr_idx++;
+    if (state->filter_mgr_idx == SAMPLE_SIZE - 1) {
+      state->filter_mgr_idx = -1;
+      // compute clause ranks
+      for (int j = 1; j < state->num_funcs - 1; j++) {
+        state->ranks[j] = (1 - (double) state->clause_outputs[j] / state->clause_outputs[j-1]) /
+            (double) state->times[j] * state->clause_outputs[j-1];
+        elog(LOG, "clause %d (%p)::rank: %f; selectivity: %f; output tuples: %d; input tuples: %d; cost: %.10f", j,
+             state->clauses[j], state->ranks[j],
+             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
+             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
+      }
+      reorder_clauses(state);
+      for (int j = 1; j < state->num_funcs - 1; j++) {
+        elog(LOG, "clause %d (%p) after reordering::rank: %f; selectivity: %f; "
+                  "output tuples: %d; input tuples: %d; cost: %f", j, state->clauses[j], state->ranks[j],
+             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
+             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
+      }
+      // reset counts/timings
+      for (int j = 0; j < state->num_funcs - 1; j++) {
+        state->clause_outputs[j] = 0;
+        state->times[j] = 0;
+      }
+    }
+  } else {
+    Datum nextIter = 1;
+    int i = 0;
+    while (nextIter != 0 && i < state->num_funcs - 1) {
+      nextIter = state->clauses[i](state, econtext, isNull);
+      i++;
+    }
   }
-  return state->clauses[state->qual_len + 1](state, econtext, isNull);
+  // store resnull and return the appropriate value
+  Datum resvalue = state->resvalue;
+  bool resnull = state->resnull;
+  *isNull = resnull;
+  return resvalue;
 }
 
-
-//void FilterManager::Clause::RunFilter(VectorProjection *input_batch, TupleIdList *tid_list) {
-//
-//  if (!ShouldReRank()) {
-//    for (const auto &term : terms_) {
-//      term->fn(input_batch, tid_list, opaque_context_);
-//      if (tid_list->IsEmpty()) break;
-//    }
-//    return;
-//  }
-//
-//  if (TPL_UNLIKELY(input_copy_.GetCapacity() != tid_list->GetCapacity())) {
-//    input_copy_.Resize(tid_list->GetCapacity());
-//    temp_.Resize(tid_list->GetCapacity());
-//  }
-//
-//  // Copy the input TID list now because we'll incrementally update the original
-//  // as we apply the terms of the clause.
-//  input_copy_.AssignFrom(*tid_list);
-//
-//#if COLLECT_OVERHEAD == 1
-//  util::Timer<std::micro> timer;
-//  timer.Start();
-//
-//  for (const auto &term : terms_) {
-//    term->fn(input_batch, tid_list, opaque_context_);
-//    if (tid_list->IsEmpty()) break;
-//  }
-//  timer.Stop();
-//  const double fast = timer.GetElapsed();
-//
-//  tid_list->AssignFrom(input_copy_);
-//  timer.Start();
-//#endif
-//
-//  const auto tuple_count = tid_list->GetTupleCount();
-//  const auto input_selectivity = tid_list->ComputeSelectivity();
-//  for (const auto &term : terms_) {
-//    temp_.AssignFrom(input_copy_);
-//    const auto exec_ns = util::TimeNanos([&]() { term->fn(input_batch, &temp_, opaque_context_); });
-//    const auto term_selectivity = temp_.ComputeSelectivity();
-//    const auto term_cost = exec_ns / tuple_count;
-//    term->rank = (input_selectivity - term_selectivity) / term_cost;
-//    LOG_TRACE("Term [{}]: term-selectivity={:04.3f}, cost={:>06.3f}, rank={:.8f}",
-//              term->insertion_index, term_selectivity, term_cost, term->rank);
-//    tid_list->IntersectWith(temp_);
-//  }
-//
-//#ifndef NDEBUG
-//  // Log a message if the term ordering after re-ranking has changed.
-//  const auto old_order = GetOptimalTermOrder();
-//  std::sort(terms_.begin(), terms_.end(),
-//  [](const auto &a, const auto &b) { return a->rank > b->rank; });
-//  const auto new_order = GetOptimalTermOrder();
-//  if (old_order != new_order) {
-//    LOG_DEBUG("Order Change: old={}, new={}", fmt::join(old_order, ","), fmt::join(new_order, ","));
-//  }
-//#else
-//  // Reorder the terms based on their updated ranking.
-//  std::sort(terms_.begin(), terms_.end(),
-//            [](const auto &a, const auto &b) { return a->rank > b->rank; });
-//#endif
-//
-//  // Update sample count.
-//  sample_count_++;
-//
-//#if COLLECT_OVERHEAD == 1
-//  timer.Stop();
-//  double slow = timer.GetElapsed();
-//  overhead_micros_ += (slow - fast);
-//#endif
-//}
+void reorder_clauses(ExprState *state) {
+  // sort clauses 1 through num_funcs - 2 based on rank, descending, using selection sort
+  bool changed = false;
+  for (int i = 1; i < state->num_funcs - 1; i++) {
+    int max_idx = i;
+    for (int j = i + 1; j < state->num_funcs - 1; j++) {
+      if (state->ranks[j] > state->ranks[max_idx]) {
+        max_idx = j;
+      }
+    }
+    if (max_idx != i) {
+      changed = true;
+      double temp_rank = state->ranks[i];
+      state->ranks[i] = state->ranks[max_idx];
+      state->ranks[max_idx] = temp_rank;
+      ExprStateEvalFunc temp_clause = state->clauses[i];
+      state->clauses[i] = state->clauses[max_idx];
+      state->clauses[max_idx] = temp_clause;
+    }
+  }
+  if (changed) {
+    elog(LOG, "filter ordering has changed");
+  }
+}

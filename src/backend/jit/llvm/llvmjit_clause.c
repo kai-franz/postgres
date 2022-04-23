@@ -426,7 +426,8 @@ build_filter_test(ExprState *state, int clause_num)
                         params, lengthof(params), "");
         }
 
-//        LLVMBuildBr(b, opblocks[opno + 1]);
+        LLVMBuildBr(b, opblocks[opno + 1]);
+        LLVMPositionBuilderAtEnd(b, opblocks[opno + 1]);
         break;
       }
 
@@ -966,8 +967,8 @@ build_filter_test(ExprState *state, int clause_num)
         /* set resvalue to false */
         LLVMBuildStore(b, l_sizet_const(0), v_resvaluep);
         /* and jump out */
-        LLVMValueRef v_zero64 = l_int64_const(0);
-        LLVMBuildRet(b, v_zero64);
+        LLVMBuildRet(b, l_int64_const(0));
+//        LLVMBuildBr(b, opblocks[opno + 1]);
         LLVMPositionBuilderAtEnd(b, opblocks[opno + 1]);
         break;
       }
@@ -2454,15 +2455,18 @@ build_filter_test(ExprState *state, int clause_num)
 //  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
 //
 //  LLVMBuildRet(b, v_tmpvalue);
-  LLVMValueRef v_tmpisnull;
-  LLVMValueRef v_tmpvalue;
+//  LLVMValueRef v_tmpisnull;
+//  LLVMValueRef v_tmpvalue;
+//
+//  v_tmpvalue = LLVMBuildLoad(b, v_tmpvaluep, "");
+//  v_tmpisnull = LLVMBuildLoad(b, v_tmpisnullp, "");
+//
+//  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
+//
+//  LLVMBuildRet(b, v_tmpvalue);
 
-  v_tmpvalue = LLVMBuildLoad(b, v_tmpvaluep, "");
-  v_tmpisnull = LLVMBuildLoad(b, v_tmpisnullp, "");
-
-  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
-
-  LLVMBuildRet(b, v_tmpvalue);
+  // return 1
+  LLVMBuildRet(b, l_int64_const(1));
   LLVMDisposeBuilder(b);
   return eval_fn;
 }
