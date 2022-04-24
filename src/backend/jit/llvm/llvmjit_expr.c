@@ -73,6 +73,65 @@ static LLVMValueRef create_LifetimeEnd(LLVMModuleRef mod);
 
 Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull);
 
+bool llvm_compile_qual(ExprState *state) {
+
+  PlanState  *parent = state->parent;
+  char	   *funcname;
+
+  LLVMJitContext *context = NULL;
+  instr_time	starttime;
+  instr_time	endtime;
+
+  llvm_enter_fatal_on_oom();
+
+  /*
+   * Right now we don't support compiling expressions without a parent, as
+   * we need access to the EState.
+   */
+  Assert(parent);
+
+  /* get or create JIT context */
+  if (parent->state->es_jit)
+    context = (LLVMJitContext *) parent->state->es_jit;
+  else
+  {
+    context = llvm_create_context(parent->state->es_jit_flags);
+    parent->state->es_jit = &context->base;
+  }
+
+  INSTR_TIME_SET_CURRENT(starttime);
+
+  if (state->num_funcs > 0) {
+    for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
+      build_filter_test(state, clause_num);
+    }
+  }
+
+  /*
+ * Don't immediately emit function, instead do so the first time the
+ * expression is actually evaluated. That allows to emit a lot of
+ * functions together, avoiding a lot of repeated llvm and memory
+ * remapping overhead.
+ */
+  {
+    CompiledExprState *cstate = palloc0(sizeof(CompiledExprState));
+
+    cstate->context = context;
+    cstate->funcname = funcname;
+
+    state->evalfunc = ExecRunCompiledExpr;
+    state->evalfunc_private = cstate;
+  }
+
+  llvm_leave_fatal_on_oom();
+
+  INSTR_TIME_SET_CURRENT(endtime);
+  INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
+                        endtime, starttime);
+
+  return true;
+}
+
 /*
  * JIT compile expression.
  */
@@ -126,6 +185,10 @@ llvm_compile_expr(ExprState *state)
 
 	instr_time	starttime;
 	instr_time	endtime;
+
+    if (state->num_funcs > 0) {
+      return llvm_compile_qual(state);
+    }
 
 	llvm_enter_fatal_on_oom();
 
@@ -552,31 +615,31 @@ llvm_compile_expr(ExprState *state)
 			case EEOP_FUNCEXPR:
 			case EEOP_FUNCEXPR_STRICT:
 				{
-                    if (prev_opcode == EEOP_SCAN_VAR) {
-                      // Build filter function
-                      LLVMValueRef v_filter_fn = build_filter(state, opno-1, &state->filter_names[filternum]);
-////                      char *filter_fn_name;
-////                      LLVMValueRef filter_fn = build_filter(state, opno-1, &filter_fn_name);
-                      LLVMValueRef *filter_args = palloc(sizeof(LLVMValueRef) * 3);
-                      filter_args[0] = v_state;
-                      filter_args[1] = v_econtext;
-                      filter_args[2] = v_isnullp;
-//                      // Build filter call
-                      LLVMValueRef v_filter_ind = l_int32_const(filternum);
-
-//                      LLVMTypeRef t_filter_fn_type =
-                      LLVMTypeRef t_filter_table_type = l_ptr(l_ptr(llvm_pg_var_func_type("TypeExprStateEvalFunc")));
-//                      LLVMTypeRef t_filter_table_type = l_ptr(LLVMInt8Type());
-                      LLVMValueRef v_filter_table = l_ptr_const(state->filters,
-                                                                t_filter_table_type);
-                      LLVMValueRef v_filter_fn_loaded = l_load_gep1(b, v_filter_table, v_filter_ind, "filter_addr");
-//                      LLVMValueRef v_loaded = LLVMBuildLoad(b, v_filter_table, "filter_0_");
+//                    if (prev_opcode == EEOP_SCAN_VAR) {
+//                      // Build filter function
+//                      LLVMValueRef v_filter_fn = build_filter(state, opno-1, &state->filter_names[filternum]);
+//////                      char *filter_fn_name;
+//////                      LLVMValueRef filter_fn = build_filter(state, opno-1, &filter_fn_name);
+//                      LLVMValueRef *filter_args = palloc(sizeof(LLVMValueRef) * 3);
+//                      filter_args[0] = v_state;
+//                      filter_args[1] = v_econtext;
+//                      filter_args[2] = v_isnullp;
+////                      // Build filter call
+//                      LLVMValueRef v_filter_ind = l_int32_const(filternum);
+//
+////                      LLVMTypeRef t_filter_fn_type =
+//                      LLVMTypeRef t_filter_table_type = l_ptr(l_ptr(llvm_pg_var_func_type("TypeExprStateEvalFunc")));
+////                      LLVMTypeRef t_filter_table_type = l_ptr(LLVMInt8Type());
+//                      LLVMValueRef v_filter_table = l_ptr_const(state->filters,
+//                                                                t_filter_table_type);
+//                      LLVMValueRef v_filter_fn_loaded = l_load_gep1(b, v_filter_table, v_filter_ind, "filter_addr");
+////                      LLVMValueRef v_loaded = LLVMBuildLoad(b, v_filter_table, "filter_0_");
+////                      LLVMBuildCall(b, v_filter_fn_loaded, filter_args, 3, "filter_call");
 //                      LLVMBuildCall(b, v_filter_fn_loaded, filter_args, 3, "filter_call");
-                      LLVMBuildCall(b, v_filter_fn_loaded, filter_args, 3, "filter_call");
-                      LLVMBuildBr(b, opblocks[opno + 1]);
-                      filternum++;
-                      break;
-                    }
+//                      LLVMBuildBr(b, opblocks[opno + 1]);
+//                      filternum++;
+//                      break;
+//                    }
 					FunctionCallInfo fcinfo = op->d.func.fcinfo_data;
 					LLVMValueRef v_fcinfo_isnull;
 					LLVMValueRef v_retval;
@@ -2398,12 +2461,6 @@ llvm_compile_expr(ExprState *state)
 
 	LLVMDisposeBuilder(b);
     LLVMValueRef clause_fn;
-    if (state->num_funcs > 0) {
-//      clause_fn = build_filter_test(state, 0);
-      for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
-        build_filter_test(state, clause_num);
-      }
-    }
 
 
 
@@ -2449,9 +2506,18 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	CheckExprStillValid(state, econtext);
 
 	llvm_enter_fatal_on_oom();
-    // Retrieve expression function
-	func = (ExprStateEvalFunc) llvm_get_function(cstate->context,
-												 cstate->funcname);
+
+    if (state->num_funcs > 0) {
+      for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
+        state->clauses[clause_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
+                                                                           state->clause_names[clause_num]);
+      }
+      func = &ExecWithFilterManager;
+    } else {
+      func = (ExprStateEvalFunc) llvm_get_function(cstate->context,
+                                                   cstate->funcname);
+    }
+
     // Populate filter table
 //    for (int filter_num = 0; filter_num < state->qual_len; filter_num++) {
 //      state->filters[filter_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
@@ -2461,10 +2527,6 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 
     // clause functions
 
-    for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
-      state->clauses[clause_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
-                                                                         state->clause_names[clause_num]);
-    }
     // print out original clause ordering
     for (int clause_num = 1; clause_num < state->num_funcs - 1; clause_num++) {
       elog(LOG, "clause %d original address: %p\n", clause_num, state->clauses[clause_num]);
@@ -2472,18 +2534,8 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 
 	llvm_leave_fatal_on_oom();
 	Assert(func);
-
-	/* remove indirection via this function for future calls */
-    if (state->num_funcs > 0) {
-      state->evalfunc = &ExecWithFilterManager;
-      state->exprfunc = func;
-      return state->evalfunc(state, econtext, isNull);
-    }
     state->evalfunc = func;
     return func(state, econtext, isNull);
-
-//    llvm_compile_expr_example(state);
-
 }
 
 static LLVMValueRef
