@@ -292,7 +292,6 @@ build_filter_test(ExprState *state, int clause_num)
 
   bool filter = false;
 
-
   for (int opno = state->filter_starts[clause_num]; opno < state->filter_ends[clause_num]; opno++)
   {
     ExprEvalStep *op;
