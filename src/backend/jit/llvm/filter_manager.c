@@ -34,7 +34,7 @@
 #include <time.h>
 
 #define SAMPLE_SIZE 1024
-#define SAMPLE_FREQ 0.2;
+#define SAMPLE_FREQ 0.1;
 
 void reorder_clauses(ExprState *state);
 Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull);
@@ -43,7 +43,8 @@ bool should_rerank(ExprState *state);
 bool should_rerank(ExprState *state) {
   bool res = random() < (RAND_MAX / SAMPLE_SIZE) * SAMPLE_FREQ;
   if (res) {
-    elog(LOG, "reranking");
+    elog(LOG, "reranking; tuples since last rerank: %d", state->nonreranks);
+    state->nonreranks = 0;
     state->reranks++;
   } else {
     state->nonreranks++;
