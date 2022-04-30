@@ -42,13 +42,13 @@ bool should_rerank(ExprState *state);
 
 bool should_rerank(ExprState *state) {
   bool res = random() < (RAND_MAX / SAMPLE_SIZE) * SAMPLE_FREQ;
-//  if (res) {
-//    elog(LOG, "reranking; tuples since last rerank: %d", state->nonreranks);
-//    state->nonreranks = 0;
-//    state->reranks++;
-//  } else {
-//    state->nonreranks++;
-//  }
+  if (res) {
+    elog(LOG, "reranking; tuples since last rerank: %d", state->nonreranks);
+    state->nonreranks = 0;
+    state->reranks++;
+  } else {
+    state->nonreranks++;
+  }
   return res;
 }
 
@@ -74,17 +74,17 @@ Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNul
       for (int j = 1; j < state->num_funcs - 1; j++) {
         state->ranks[j] = (1 - (double) state->clause_outputs[j] / state->clause_outputs[j-1]) /
             (double) state->times[j] * state->clause_outputs[j-1];
-//        elog(LOG, "clause %d (%p)::rank: %f; selectivity: %f; output tuples: %d; input tuples: %d; cost: %.10f", j,
-//             state->clauses[j], state->ranks[j],
-//             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
-//             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
+        elog(LOG, "clause %d (%p)::rank: %f; selectivity: %f; output tuples: %d; input tuples: %d; cost: %.10f", j,
+             state->clauses[j], state->ranks[j],
+             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
+             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
       }
       reorder_clauses(state);
       for (int j = 1; j < state->num_funcs - 1; j++) {
-//        elog(LOG, "clause %d (%p) after reordering::rank: %f; selectivity: %f; "
-//                  "output tuples: %d; input tuples: %d; cost: %f", j, state->clauses[j], state->ranks[j],
-//             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
-//             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
+        elog(LOG, "clause %d (%p) after reordering::rank: %f; selectivity: %f; "
+                  "output tuples: %d; input tuples: %d; cost: %f", j, state->clauses[j], state->ranks[j],
+             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
+             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
       }
       // reset counts/timings
       for (int j = 0; j < state->num_funcs - 1; j++) {
@@ -127,7 +127,7 @@ void reorder_clauses(ExprState *state) {
       state->clauses[max_idx] = temp_clause;
     }
   }
-//  if (changed) {
-//    elog(LOG, "filter ordering has changed");
-//  }
+  if (changed) {
+    elog(LOG, "filter ordering has changed");
+  }
 }
