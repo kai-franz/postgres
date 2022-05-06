@@ -623,9 +623,6 @@ build_filter_test(ExprState *state, int clause_num)
         LLVMValueRef v_fcinfo_isnull;
         LLVMValueRef v_retval;
 
-
-        opcode = EEOP_FUNCEXPR;
-
         if (opcode == EEOP_FUNCEXPR_STRICT)
         {
           LLVMBasicBlockRef b_nonull;
@@ -700,8 +697,6 @@ build_filter_test(ExprState *state, int clause_num)
         LLVMBuildStore(b, v_fcinfo_isnull, v_resnullp);
 
         LLVMBuildBr(b, opblocks[opno + 1]);
-
-
         break;
       }
 
