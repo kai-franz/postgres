@@ -100,11 +100,14 @@ Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNul
       i++;
     }
   }
+  /*
   // store resnull and return the appropriate value
   Datum resvalue = state->resvalue;
   bool resnull = state->resnull;
   *isNull = resnull;
-  return resvalue;
+   */
+
+  return state->clauses[state->num_funcs - 1](state, econtext, isNull);
 }
 
 void reorder_clauses(ExprState *state) {

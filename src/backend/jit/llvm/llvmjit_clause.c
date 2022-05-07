@@ -2465,3 +2465,109 @@ build_filter_test(ExprState *state, int clause_num)
   return eval_fn;
 }
 
+LLVMValueRef
+build_done_clause(ExprState *state)
+{
+  PlanState  *parent = state->parent;
+  char	   *funcname;
+
+  LLVMJitContext *context = NULL;
+
+  LLVMBuilderRef b;
+  LLVMModuleRef mod;
+  LLVMValueRef eval_fn;
+  LLVMBasicBlockRef entry;
+  LLVMBasicBlockRef *opblocks;
+
+  /* state itself */
+  LLVMValueRef v_state;
+  LLVMValueRef v_parent;
+
+  /* returnvalue */
+  LLVMValueRef v_isnullp;
+
+  /* tmp vars in state */
+  LLVMValueRef v_tmpvaluep;
+  LLVMValueRef v_tmpisnullp;
+
+  /* slots */
+  LLVMValueRef v_innerslot;
+  LLVMValueRef v_outerslot;
+  LLVMValueRef v_scanslot;
+  LLVMValueRef v_resultslot;
+
+  /* nulls/values of slots */
+  LLVMValueRef v_innervalues;
+  LLVMValueRef v_innernulls;
+  LLVMValueRef v_outervalues;
+  LLVMValueRef v_outernulls;
+  LLVMValueRef v_scanvalues;
+  LLVMValueRef v_scannulls;
+  LLVMValueRef v_resultvalues;
+  LLVMValueRef v_resultnulls;
+
+  /* stuff in econtext */
+  LLVMValueRef v_aggvalues;
+  LLVMValueRef v_aggnulls;
+
+  instr_time	starttime;
+  instr_time	endtime;
+
+  llvm_enter_fatal_on_oom();
+
+  /*
+   * Right now we don't support compiling expressions without a parent, as
+   * we need access to the EState.
+   */
+  Assert(parent);
+
+  /* get or create JIT context */
+  if (parent->state->es_jit)
+    context = (LLVMJitContext *) parent->state->es_jit;
+  else
+  {
+    context = llvm_create_context(parent->state->es_jit_flags);
+    parent->state->es_jit = &context->base;
+  }
+
+  mod = llvm_mutable_module(context);
+
+  b = LLVMCreateBuilder();
+
+  funcname = llvm_expand_funcname(context, "done_clause");
+  state->clause_names[state->num_funcs - 1] = funcname;
+
+  /* create function */
+  eval_fn = LLVMAddFunction(mod, funcname,
+                            llvm_pg_var_func_type("TypeExprStateEvalFunc"));
+  LLVMSetLinkage(eval_fn, LLVMExternalLinkage);
+  LLVMSetVisibility(eval_fn, LLVMDefaultVisibility);
+  llvm_copy_attributes(AttributeTemplate, eval_fn);
+
+  entry = LLVMAppendBasicBlock(eval_fn, "main");
+
+  /* build state */
+  v_state = LLVMGetParam(eval_fn, 0);
+  v_isnullp = LLVMGetParam(eval_fn, 2);
+
+  LLVMPositionBuilderAtEnd(b, entry);
+
+  v_tmpvaluep = LLVMBuildStructGEP(b, v_state,
+                                   FIELDNO_EXPRSTATE_RESVALUE,
+                                   "v.state.resvalue");
+  v_tmpisnullp = LLVMBuildStructGEP(b, v_state,
+                                    FIELDNO_EXPRSTATE_RESNULL,
+                                    "v.state.resnull");
+
+
+  LLVMValueRef v_tmpisnull;
+  LLVMValueRef v_tmpvalue;
+
+  v_tmpvalue = LLVMBuildLoad(b, v_tmpvaluep, "");
+  v_tmpisnull = LLVMBuildLoad(b, v_tmpisnullp, "");
+
+  LLVMBuildStore(b, v_tmpisnull, v_isnullp);
+
+  LLVMBuildRet(b, v_tmpvalue);
+  return eval_fn;
+}

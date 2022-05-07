@@ -105,6 +105,7 @@ bool llvm_compile_qual(ExprState *state) {
     for (int clause_num = 0; clause_num < state->num_funcs - 1; clause_num++) {
       build_filter_test(state, clause_num);
     }
+    build_done_clause(state);
   }
 
   /*
@@ -2472,7 +2473,7 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	llvm_enter_fatal_on_oom();
 
     if (state->num_funcs > 0) {
-      for (int clause_num = 0; clause_num < state->num_funcs - 1; clause_num++) {
+      for (int clause_num = 0; clause_num < state->num_funcs; clause_num++) {
         state->clauses[clause_num] = (ExprStateEvalFunc) llvm_get_function(cstate->context,
                                                                            state->clause_names[clause_num]);
       }

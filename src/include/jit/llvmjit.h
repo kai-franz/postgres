@@ -115,6 +115,7 @@ extern LLVMValueRef slot_compile_deform(struct LLVMJitContext *context, TupleDes
 										const struct TupleTableSlotOps *ops, int natts);
 extern LLVMValueRef build_filter(struct ExprState *state, int opno, char **funcname_p);
 extern LLVMValueRef build_filter_test(struct ExprState *state, int clause_num);
+extern LLVMValueRef build_done_clause(struct ExprState *state);
 extern bool llvm_compile_expr_example(struct ExprState *state);
 
 /*
