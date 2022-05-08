@@ -53,52 +53,11 @@ bool should_rerank(ExprState *state) {
 }
 
 Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull) {
-  if (state->filter_mgr_idx >= 0 || should_rerank(state)) {
-    clock_t start;
-    clock_t end;
-    Datum isTrue = 1;
-    int i = 0;
-    while (isTrue != 0 && i < state->num_funcs - 1) {
-      start = clock();
-      isTrue = state->clauses[i](state, econtext, isNull);
-      end = clock() - start;
-      long double elapsed = (long double) end / CLOCKS_PER_SEC;
-      state->times[i] += elapsed;
-      state->clause_outputs[i] += isTrue;
-      i++;
-    }
-    state->filter_mgr_idx++;
-    if (state->filter_mgr_idx == SAMPLE_SIZE - 1) {
-      state->filter_mgr_idx = -1;
-      // compute clause ranks
-      for (int j = 1; j < state->num_funcs - 1; j++) {
-        state->ranks[j] = (1 - (double) state->clause_outputs[j] / state->clause_outputs[j-1]) /
-            (double) state->times[j] * state->clause_outputs[j-1];
-        elog(LOG, "clause %d (%p)::rank: %f; selectivity: %f; output tuples: %d; input tuples: %d; cost: %.10f", j,
-             state->clauses[j], state->ranks[j],
-             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
-             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
-      }
-      reorder_clauses(state);
-      for (int j = 1; j < state->num_funcs - 1; j++) {
-        elog(LOG, "clause %d (%p) after reordering::rank: %f; selectivity: %f; "
-                  "output tuples: %d; input tuples: %d; cost: %f", j, state->clauses[j], state->ranks[j],
-             (double) state->clause_outputs[j] / state->clause_outputs[j-1], state->clause_outputs[j],
-             state->clause_outputs[j-1], (double) state->times[j] / state->clause_outputs[j-1]);
-      }
-      // reset counts/timings
-      for (int j = 0; j < state->num_funcs - 1; j++) {
-        state->clause_outputs[j] = 0;
-        state->times[j] = 0;
-      }
-    }
-  } else {
-    Datum nextIter = 1;
-    int i = 0;
-    while (nextIter != 0 && i < state->num_funcs - 1) {
-      nextIter = state->clauses[i](state, econtext, isNull);
-      i++;
-    }
+  Datum nextIter = 1;
+  int i = 0;
+  while (nextIter != 0 && i < state->num_funcs - 1) {
+    nextIter = state->clauses[i](state, econtext, isNull);
+    i++;
   }
   /*
   // store resnull and return the appropriate value
