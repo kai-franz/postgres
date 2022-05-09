@@ -33,6 +33,12 @@
 
 #include <time.h>
 
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+
 #define SAMPLE_SIZE 1024
 #define SAMPLE_FREQ 0.1;
 
@@ -54,16 +60,13 @@ bool should_rerank(ExprState *state) {
 
 Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNull) {
   if (state->filter_mgr_idx > 0 || should_rerank(state)) {
-    struct timespec start;
-    struct timespec end;
     Datum isTrue = 1;
     int i = 0;
     while (isTrue != 0 && i < state->num_funcs - 1) {
-      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start);
+      long long start = __rdtsc();
       isTrue = state->clauses[i](state, econtext, isNull);
-      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end);
-      long double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-      state->times[i] += elapsed;
+      long long end = __rdtsc();
+      state->times[i] += end - start;
       state->clause_outputs[i] += isTrue;
       i++;
     }
