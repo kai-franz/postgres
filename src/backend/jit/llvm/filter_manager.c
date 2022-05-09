@@ -63,9 +63,9 @@ Datum ExecWithFilterManager(ExprState *state, ExprContext *econtext, bool *isNul
     Datum isTrue = 1;
     int i = 0;
     while (isTrue != 0 && i < state->num_funcs - 1) {
-      long long start = __rdtsc();
+      unsigned long long start = __rdtsc();
       isTrue = state->clauses[i](state, econtext, isNull);
-      long long end = __rdtsc();
+      unsigned long long end = __rdtsc();
       state->times[i] += end - start;
       state->clause_outputs[i] += isTrue;
       i++;
