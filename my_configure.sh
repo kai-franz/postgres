@@ -1,0 +1,1 @@
+./configure --with-llvm --prefix=$HOME/my_postgres --enable-debug CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer"
