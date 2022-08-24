@@ -1,0 +1,1 @@
+$HOME/postgres/bin/pg_ctl -D $HOME/postgres/data -l $HOME/CLionProjects/postgres_jit_project/logfile_pg start

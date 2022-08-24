@@ -51,6 +51,7 @@
 #include "commands/vacuum.h"
 #include "commands/variable.h"
 #include "common/string.h"
+#include "executor/execExpr.h"
 #include "funcapi.h"
 #include "jit/jit.h"
 #include "libpq/auth.h"
@@ -2024,6 +2025,17 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+
+    {
+        {"jit_filter_reordering", PGC_USERSET, QUERY_TUNING_OTHER,
+             gettext_noop("Enable JIT adaptive filter reordering."),
+             NULL,
+             GUC_EXPLAIN
+        },
+        &jit_filter_reordering_enabled,
+        true,
+        NULL, NULL, NULL
+    },
 
 	{
 		{"jit_debugging_support", PGC_SU_BACKEND, DEVELOPER_OPTIONS,

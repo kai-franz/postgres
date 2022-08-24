@@ -1,1 +1,1 @@
-./configure --with-llvm --prefix=$HOME/my_postgres --enable-debug CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer"
+./configure --with-llvm --prefix=$HOME/my_postgres --enable-debug CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer" LLVM_CONFIG='/usr/bin/llvm-config-13'

@@ -779,4 +779,7 @@ extern void ExecEvalAggOrderedTransDatum(ExprState *state, ExprEvalStep *op,
 extern void ExecEvalAggOrderedTransTuple(ExprState *state, ExprEvalStep *op,
 										 ExprContext *econtext);
 
+// GUCs
+extern bool jit_filter_reordering_enabled;
+
 #endif							/* EXEC_EXPR_H */

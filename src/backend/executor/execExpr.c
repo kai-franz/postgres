@@ -84,7 +84,8 @@ static void ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 								  int transno, int setno, int setoff, bool ishash,
 								  bool nullcheck);
 
-
+// GUCs
+bool jit_filter_reordering_enabled = true;
 /*
  * ExecInitExpr: prepare an expression tree for execution
  *
@@ -227,7 +228,7 @@ ExecInitQual(List *qual, PlanState *parent)
 //    state->filter_names = palloc(sizeof(char *) * list_length(qual));
 
     int num_funcs;
-    if (qual != NULL) {
+    if (qual != NULL /* && jit_filter_reordering_enabled */) {
       num_funcs = list_length(qual) + 2;
       state->filters = palloc(sizeof(ExprStateEvalFunc) * list_length(qual) * 2);
       state->filter_names = palloc(sizeof(char *) * list_length(qual) * 2);
