@@ -17,45 +17,10 @@ LINE 1: CREATE INDEX IF NOT EXISTS ON onek USING btree(unique1 int4_...
 CREATE INDEX onek_unique2 ON onek USING btree(unique2 int4_ops);
 CREATE INDEX onek_hundred ON onek USING btree(hundred int4_ops);
 CREATE INDEX onek_stringu1 ON onek USING btree(stringu1 name_ops);
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 CREATE INDEX tenk1_unique1 ON tenk1 USING btree(unique1 int4_ops);
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 CREATE INDEX tenk1_unique2 ON tenk1 USING btree(unique2 int4_ops);
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 CREATE INDEX tenk1_hundred ON tenk1 USING btree(hundred int4_ops);
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 CREATE INDEX tenk1_thous_tenthous ON tenk1 (thousand, tenthous);
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 CREATE INDEX tenk2_unique1 ON tenk2 USING btree(unique1 int4_ops);
 CREATE INDEX tenk2_unique2 ON tenk2 USING btree(unique2 int4_ops);
 CREATE INDEX tenk2_hundred ON tenk2 USING btree(hundred int4_ops);
@@ -1251,13 +1216,6 @@ DROP TABLE unlogged_hash_table;
 -- maintenance_work_mem setting and fillfactor:
 SET maintenance_work_mem = '1MB';
 CREATE INDEX hash_tuplesort_idx ON tenk1 USING hash (stringu1 name_ops) WITH (fillfactor = 10);
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
                       QUERY PLAN                       
@@ -1945,13 +1903,6 @@ SELECT count(*) FROM dupindexcols
     97
 (1 row)
 
-select relallvisible::float8/relpages as visfrac
-from pg_class where relname = 'tenk1';
- visfrac 
----------
-       1
-(1 row)
-
 --
 -- Check ordering of =ANY indexqual results (bug in 9.2.0)
 --
@@ -2571,9 +2522,16 @@ REINDEX INDEX CONCURRENTLY pg_toast.pg_toast_1260_index; -- no catalog toast ind
 ERROR:  cannot reindex system catalogs concurrently
 REINDEX SYSTEM CONCURRENTLY postgres; -- not allowed for SYSTEM
 ERROR:  cannot reindex system catalogs concurrently
+REINDEX (CONCURRENTLY) SYSTEM postgres; -- ditto
+ERROR:  cannot reindex system catalogs concurrently
+REINDEX (CONCURRENTLY) SYSTEM;  -- ditto
+ERROR:  cannot reindex system catalogs concurrently
 -- Warns about catalog relations
 REINDEX SCHEMA CONCURRENTLY pg_catalog;
 WARNING:  cannot reindex system catalogs concurrently, skipping all
+-- Not the current database
+REINDEX DATABASE not_current_database;
+ERROR:  can only reindex the currently open database
 -- Check the relation status, there should not be invalid indexes
 \d concur_reindex_tab
          Table "public.concur_reindex_tab"

@@ -197,7 +197,7 @@ static void append_btree_pattern(PatternInfoArray *pia, const char *pattern,
 static void compile_database_list(PGconn *conn, SimplePtrList *databases,
 								  const char *initial_dbname);
 static void compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
-										 const DatabaseInfo *datinfo,
+										 const DatabaseInfo *dat,
 										 uint64 *pagecount);
 
 #define log_no_match(...) do { \
@@ -930,6 +930,8 @@ should_processing_continue(PGresult *res)
 			/* This is expected but requires closer scrutiny */
 		case PGRES_FATAL_ERROR:
 			severity = PQresultErrorField(res, PG_DIAG_SEVERITY_NONLOCALIZED);
+			if (severity == NULL)
+				return false;	/* libpq failure, probably lost connection */
 			if (strcmp(severity, "FATAL") == 0)
 				return false;
 			if (strcmp(severity, "PANIC") == 0)
@@ -1074,17 +1076,17 @@ verify_btree_slot_handler(PGresult *res, PGconn *conn, void *context)
 
 	if (PQresultStatus(res) == PGRES_TUPLES_OK)
 	{
-		int                     ntups = PQntuples(res);
+		int			ntups = PQntuples(res);
 
 		if (ntups > 1)
 		{
 			/*
 			 * We expect the btree checking functions to return one void row
 			 * each, or zero rows if the check was skipped due to the object
-			 * being in the wrong state to be checked, so we should output some
-			 * sort of warning if we get anything more, not because it
-			 * indicates corruption, but because it suggests a mismatch between
-			 * amcheck and pg_amcheck versions.
+			 * being in the wrong state to be checked, so we should output
+			 * some sort of warning if we get anything more, not because it
+			 * indicates corruption, but because it suggests a mismatch
+			 * between amcheck and pg_amcheck versions.
 			 *
 			 * In conjunction with --progress, anything written to stderr at
 			 * this time would present strangely to the user without an extra
@@ -1308,10 +1310,17 @@ static void
 append_database_pattern(PatternInfoArray *pia, const char *pattern, int encoding)
 {
 	PQExpBufferData buf;
+	int			dotcnt;
 	PatternInfo *info = extend_pattern_info_array(pia);
 
 	initPQExpBuffer(&buf);
-	patternToSQLRegex(encoding, NULL, NULL, &buf, pattern, false);
+	patternToSQLRegex(encoding, NULL, NULL, &buf, pattern, false, false,
+					  &dotcnt);
+	if (dotcnt > 0)
+	{
+		pg_log_error("improper qualified name (too many dotted names): %s", pattern);
+		exit(2);
+	}
 	info->pattern = pattern;
 	info->db_regex = pstrdup(buf.data);
 
@@ -1332,12 +1341,19 @@ append_schema_pattern(PatternInfoArray *pia, const char *pattern, int encoding)
 {
 	PQExpBufferData dbbuf;
 	PQExpBufferData nspbuf;
+	int			dotcnt;
 	PatternInfo *info = extend_pattern_info_array(pia);
 
 	initPQExpBuffer(&dbbuf);
 	initPQExpBuffer(&nspbuf);
 
-	patternToSQLRegex(encoding, NULL, &dbbuf, &nspbuf, pattern, false);
+	patternToSQLRegex(encoding, NULL, &dbbuf, &nspbuf, pattern, false, false,
+					  &dotcnt);
+	if (dotcnt > 1)
+	{
+		pg_log_error("improper qualified name (too many dotted names): %s", pattern);
+		exit(2);
+	}
 	info->pattern = pattern;
 	if (dbbuf.data[0])
 	{
@@ -1369,13 +1385,20 @@ append_relation_pattern_helper(PatternInfoArray *pia, const char *pattern,
 	PQExpBufferData dbbuf;
 	PQExpBufferData nspbuf;
 	PQExpBufferData relbuf;
+	int			dotcnt;
 	PatternInfo *info = extend_pattern_info_array(pia);
 
 	initPQExpBuffer(&dbbuf);
 	initPQExpBuffer(&nspbuf);
 	initPQExpBuffer(&relbuf);
 
-	patternToSQLRegex(encoding, &dbbuf, &nspbuf, &relbuf, pattern, false);
+	patternToSQLRegex(encoding, &dbbuf, &nspbuf, &relbuf, pattern, false,
+					  false, &dotcnt);
+	if (dotcnt > 2)
+	{
+		pg_log_error("improper relation name (too many dotted names): %s", pattern);
+		exit(2);
+	}
 	info->pattern = pattern;
 	if (dbbuf.data[0])
 	{
@@ -1486,7 +1509,7 @@ append_db_pattern_cte(PQExpBuffer buf, const PatternInfoArray *pia,
 			have_values = true;
 			appendPQExpBuffer(buf, "%s\n(%d, ", comma, pattern_id);
 			appendStringLiteralConn(buf, info->db_regex, conn);
-			appendPQExpBufferStr(buf, ")");
+			appendPQExpBufferChar(buf, ')');
 			comma = ",";
 		}
 	}
@@ -1742,7 +1765,7 @@ append_rel_pattern_raw_cte(PQExpBuffer buf, const PatternInfoArray *pia,
 			appendPQExpBufferStr(buf, ", true::BOOLEAN");
 		else
 			appendPQExpBufferStr(buf, ", false::BOOLEAN");
-		appendPQExpBufferStr(buf, ")");
+		appendPQExpBufferChar(buf, ')');
 		comma = ",";
 	}
 
@@ -1949,15 +1972,15 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 		 * selected above, filtering by exclusion patterns (if any) that match
 		 * btree index names.
 		 */
-		appendPQExpBuffer(&sql,
-						  ", index (oid, nspname, relname, relpages) AS ("
-						  "\nSELECT c.oid, r.nspname, c.relname, c.relpages "
-						  "FROM relation r"
-						  "\nINNER JOIN pg_catalog.pg_index i "
-						  "ON r.oid = i.indrelid "
-						  "INNER JOIN pg_catalog.pg_class c "
-						  "ON i.indexrelid = c.oid "
-						  "AND c.relpersistence != 't'");
+		appendPQExpBufferStr(&sql,
+							 ", index (oid, nspname, relname, relpages) AS ("
+							 "\nSELECT c.oid, r.nspname, c.relname, c.relpages "
+							 "FROM relation r"
+							 "\nINNER JOIN pg_catalog.pg_index i "
+							 "ON r.oid = i.indrelid "
+							 "INNER JOIN pg_catalog.pg_class c "
+							 "ON i.indexrelid = c.oid "
+							 "AND c.relpersistence != 't'");
 		if (opts.excludeidx || opts.excludensp)
 			appendPQExpBufferStr(&sql,
 								 "\nINNER JOIN pg_catalog.pg_namespace n "
@@ -1988,15 +2011,15 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 		 * primary heap tables selected above, filtering by exclusion patterns
 		 * (if any) that match the toast index names.
 		 */
-		appendPQExpBuffer(&sql,
-						  ", toast_index (oid, nspname, relname, relpages) AS ("
-						  "\nSELECT c.oid, 'pg_toast', c.relname, c.relpages "
-						  "FROM toast t "
-						  "INNER JOIN pg_catalog.pg_index i "
-						  "ON t.oid = i.indrelid"
-						  "\nINNER JOIN pg_catalog.pg_class c "
-						  "ON i.indexrelid = c.oid "
-						  "AND c.relpersistence != 't'");
+		appendPQExpBufferStr(&sql,
+							 ", toast_index (oid, nspname, relname, relpages) AS ("
+							 "\nSELECT c.oid, 'pg_toast', c.relname, c.relpages "
+							 "FROM toast t "
+							 "INNER JOIN pg_catalog.pg_index i "
+							 "ON t.oid = i.indrelid"
+							 "\nINNER JOIN pg_catalog.pg_class c "
+							 "ON i.indexrelid = c.oid "
+							 "AND c.relpersistence != 't'");
 		if (opts.excludeidx)
 			appendPQExpBufferStr(&sql,
 								 "\nLEFT OUTER JOIN exclude_pat ep "
@@ -2021,9 +2044,9 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	 * matched in their own right, so we rely on UNION to deduplicate the
 	 * list.
 	 */
-	appendPQExpBuffer(&sql,
-					  "\nSELECT pattern_id, is_heap, is_btree, oid, nspname, relname, relpages "
-					  "FROM (");
+	appendPQExpBufferStr(&sql,
+						 "\nSELECT pattern_id, is_heap, is_btree, oid, nspname, relname, relpages "
+						 "FROM (");
 	appendPQExpBufferStr(&sql,
 	/* Inclusion patterns that failed to match */
 						 "\nSELECT pattern_id, is_heap, is_btree, "

@@ -108,7 +108,7 @@ static bool ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status
 static void index_delete_sort(TM_IndexDeleteOp *delstate);
 static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
-static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_required,
+static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
 
 
@@ -2281,7 +2281,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 
 	/* currently not needed (thus unsupported) for heap_multi_insert() */
-	AssertArg(!(options & HEAP_INSERT_NO_LOGICAL));
+	Assert(!(options & HEAP_INSERT_NO_LOGICAL));
 
 	needwal = RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
@@ -2711,6 +2711,15 @@ heap_delete(Relation relation, ItemPointer tid,
 
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	Assert(ItemIdIsNormal(lp));
+
+	tp.t_tableOid = RelationGetRelid(relation);
+	tp.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+	tp.t_len = ItemIdGetLength(lp);
+	tp.t_self = *tid;
+
+l1:
 	/*
 	 * If we didn't pin the visibility map page and the page has become all
 	 * visible while we were busy locking the buffer, we'll have to unlock and
@@ -2724,15 +2733,6 @@ heap_delete(Relation relation, ItemPointer tid,
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	}
 
-	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-	Assert(ItemIdIsNormal(lp));
-
-	tp.t_tableOid = RelationGetRelid(relation);
-	tp.t_data = (HeapTupleHeader) PageGetItem(page, lp);
-	tp.t_len = ItemIdGetLength(lp);
-	tp.t_self = *tid;
-
-l1:
 	result = HeapTupleSatisfiesUpdate(&tp, cid, buffer);
 
 	if (result == TM_Invisible)
@@ -2791,8 +2791,12 @@ l1:
 				 * If xwait had just locked the tuple then some other xact
 				 * could update this tuple before we get to this point.  Check
 				 * for xmax change, and start over if so.
+				 *
+				 * We also must start over if we didn't pin the VM page, and
+				 * the page has become all visible.
 				 */
-				if (xmax_infomask_changed(tp.t_data->t_infomask, infomask) ||
+				if ((vmbuffer == InvalidBuffer && PageIsAllVisible(page)) ||
+					xmax_infomask_changed(tp.t_data->t_infomask, infomask) ||
 					!TransactionIdEquals(HeapTupleHeaderGetRawXmax(tp.t_data),
 										 xwait))
 					goto l1;
@@ -2824,8 +2828,12 @@ l1:
 			 * xwait is done, but if xwait had just locked the tuple then some
 			 * other xact could update this tuple before we get to this point.
 			 * Check for xmax change, and start over if so.
+			 *
+			 * We also must start over if we didn't pin the VM page, and the
+			 * page has become all visible.
 			 */
-			if (xmax_infomask_changed(tp.t_data->t_infomask, infomask) ||
+			if ((vmbuffer == InvalidBuffer && PageIsAllVisible(page)) ||
+				xmax_infomask_changed(tp.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(HeapTupleHeaderGetRawXmax(tp.t_data),
 									 xwait))
 				goto l1;
@@ -3190,7 +3198,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * Note that we get copies of each bitmap, so we need not worry about
 	 * relcache flush happening midway through.
 	 */
-	hot_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_HOT_BLOCKING);
+	hot_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_ALL);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
@@ -6275,14 +6283,14 @@ FreezeMultiXactId(MultiXactId multi, uint16 t_infomask,
 		 */
 		if (ISUPDATE_from_mxstatus(members[i].status))
 		{
-			TransactionId xid = members[i].xid;
+			TransactionId txid = members[i].xid;
 
-			Assert(TransactionIdIsValid(xid));
-			if (TransactionIdPrecedes(xid, relfrozenxid))
+			Assert(TransactionIdIsValid(txid));
+			if (TransactionIdPrecedes(txid, relfrozenxid))
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg_internal("found update xid %u from before relfrozenxid %u",
-										 xid, relfrozenxid)));
+										 txid, relfrozenxid)));
 
 			/*
 			 * It's an update; should we keep it?  If the transaction is known
@@ -6296,13 +6304,13 @@ FreezeMultiXactId(MultiXactId multi, uint16 t_infomask,
 			 * because of race conditions explained in detail in
 			 * heapam_visibility.c.
 			 */
-			if (TransactionIdIsCurrentTransactionId(xid) ||
-				TransactionIdIsInProgress(xid))
+			if (TransactionIdIsCurrentTransactionId(txid) ||
+				TransactionIdIsInProgress(txid))
 			{
 				Assert(!TransactionIdIsValid(update_xid));
-				update_xid = xid;
+				update_xid = txid;
 			}
-			else if (TransactionIdDidCommit(xid))
+			else if (TransactionIdDidCommit(txid))
 			{
 				/*
 				 * The transaction committed, so we can tell caller to set
@@ -6311,7 +6319,7 @@ FreezeMultiXactId(MultiXactId multi, uint16 t_infomask,
 				 */
 				Assert(!TransactionIdIsValid(update_xid));
 				update_committed = true;
-				update_xid = xid;
+				update_xid = txid;
 			}
 			else
 			{
@@ -7218,7 +7226,7 @@ heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple)
  * heap_tuple_would_freeze
  *
  * Return value indicates if heap_prepare_freeze_tuple sibling function would
- * freeze any of the XID/XMID fields from the tuple, given the same cutoffs.
+ * freeze any of the XID/MXID fields from the tuple, given the same cutoffs.
  * We must also deal with dead tuples here, since (xmin, xmax, xvac) fields
  * could be processed by pruning away the whole tuple instead of freezing.
  *
@@ -8189,7 +8197,7 @@ log_heap_freeze(Relation reln, Buffer buffer, TransactionId cutoff_xid,
  * heap_buffer, if necessary.
  */
 XLogRecPtr
-log_heap_visible(RelFileNode rnode, Buffer heap_buffer, Buffer vm_buffer,
+log_heap_visible(RelFileLocator rlocator, Buffer heap_buffer, Buffer vm_buffer,
 				 TransactionId cutoff_xid, uint8 vmflags)
 {
 	xl_heap_visible xlrec;
@@ -8454,7 +8462,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
 	Assert(tup->t_tableOid != InvalidOid);
 
 	xlrec.top_xid = GetTopTransactionId();
-	xlrec.target_node = relation->rd_node;
+	xlrec.target_locator = relation->rd_locator;
 	xlrec.target_tid = tup->t_self;
 
 	/*
@@ -8623,18 +8631,18 @@ heap_xlog_prune(XLogReaderState *record)
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_prune *xlrec = (xl_heap_prune *) XLogRecGetData(record);
 	Buffer		buffer;
-	RelFileNode rnode;
+	RelFileLocator rlocator;
 	BlockNumber blkno;
 	XLogRedoAction action;
 
-	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &rlocator, NULL, &blkno);
 
 	/*
 	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
 	 * no queries running for which the removed tuples are still visible.
 	 */
 	if (InHotStandby)
-		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rnode);
+		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rlocator);
 
 	/*
 	 * If we have a full-page image, restore it (using a cleanup lock) and
@@ -8694,7 +8702,7 @@ heap_xlog_prune(XLogReaderState *record)
 		 * Do this regardless of a full-page image being applied, since the
 		 * FSM data is not in the page anyway.
 		 */
-		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
+		XLogRecordPageWithFreeSpace(rlocator, blkno, freespace);
 	}
 }
 
@@ -8751,9 +8759,9 @@ heap_xlog_vacuum(XLogReaderState *record)
 	if (BufferIsValid(buffer))
 	{
 		Size		freespace = PageGetHeapFreeSpace(BufferGetPage(buffer));
-		RelFileNode rnode;
+		RelFileLocator rlocator;
 
-		XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+		XLogRecGetBlockTag(record, 0, &rlocator, NULL, &blkno);
 
 		UnlockReleaseBuffer(buffer);
 
@@ -8766,7 +8774,7 @@ heap_xlog_vacuum(XLogReaderState *record)
 		 * Do this regardless of a full-page image being applied, since the
 		 * FSM data is not in the page anyway.
 		 */
-		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
+		XLogRecordPageWithFreeSpace(rlocator, blkno, freespace);
 	}
 }
 
@@ -8786,11 +8794,11 @@ heap_xlog_visible(XLogReaderState *record)
 	Buffer		vmbuffer = InvalidBuffer;
 	Buffer		buffer;
 	Page		page;
-	RelFileNode rnode;
+	RelFileLocator rlocator;
 	BlockNumber blkno;
 	XLogRedoAction action;
 
-	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 1, &rlocator, NULL, &blkno);
 
 	/*
 	 * If there are any Hot Standby transactions running that have an xmin
@@ -8802,7 +8810,7 @@ heap_xlog_visible(XLogReaderState *record)
 	 * rather than killing the transaction outright.
 	 */
 	if (InHotStandby)
-		ResolveRecoveryConflictWithSnapshot(xlrec->cutoff_xid, rnode);
+		ResolveRecoveryConflictWithSnapshot(xlrec->cutoff_xid, rlocator);
 
 	/*
 	 * Read the heap page, if it still exists. If the heap file has dropped or
@@ -8865,7 +8873,7 @@ heap_xlog_visible(XLogReaderState *record)
 		 * FSM data is not in the page anyway.
 		 */
 		if (xlrec->flags & VISIBILITYMAP_VALID_BITS)
-			XLogRecordPageWithFreeSpace(rnode, blkno, space);
+			XLogRecordPageWithFreeSpace(rlocator, blkno, space);
 	}
 
 	/*
@@ -8890,7 +8898,7 @@ heap_xlog_visible(XLogReaderState *record)
 		 */
 		LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 
-		reln = CreateFakeRelcacheEntry(rnode);
+		reln = CreateFakeRelcacheEntry(rlocator);
 		visibilitymap_pin(reln, blkno, &vmbuffer);
 
 		/*
@@ -8933,13 +8941,13 @@ heap_xlog_freeze_page(XLogReaderState *record)
 	 */
 	if (InHotStandby)
 	{
-		RelFileNode rnode;
+		RelFileLocator rlocator;
 		TransactionId latestRemovedXid = cutoff_xid;
 
 		TransactionIdRetreat(latestRemovedXid);
 
-		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
-		ResolveRecoveryConflictWithSnapshot(latestRemovedXid, rnode);
+		XLogRecGetBlockTag(record, 0, &rlocator, NULL, NULL);
+		ResolveRecoveryConflictWithSnapshot(latestRemovedXid, rlocator);
 	}
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
@@ -9007,10 +9015,10 @@ heap_xlog_delete(XLogReaderState *record)
 	ItemId		lp = NULL;
 	HeapTupleHeader htup;
 	BlockNumber blkno;
-	RelFileNode target_node;
+	RelFileLocator target_locator;
 	ItemPointerData target_tid;
 
-	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &target_locator, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
 
@@ -9020,7 +9028,7 @@ heap_xlog_delete(XLogReaderState *record)
 	 */
 	if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
 	{
-		Relation	reln = CreateFakeRelcacheEntry(target_node);
+		Relation	reln = CreateFakeRelcacheEntry(target_locator);
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
@@ -9086,12 +9094,12 @@ heap_xlog_insert(XLogReaderState *record)
 	xl_heap_header xlhdr;
 	uint32		newlen;
 	Size		freespace = 0;
-	RelFileNode target_node;
+	RelFileLocator target_locator;
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
 
-	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &target_locator, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
 
@@ -9101,7 +9109,7 @@ heap_xlog_insert(XLogReaderState *record)
 	 */
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
-		Relation	reln = CreateFakeRelcacheEntry(target_node);
+		Relation	reln = CreateFakeRelcacheEntry(target_locator);
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
@@ -9184,7 +9192,7 @@ heap_xlog_insert(XLogReaderState *record)
 	 * totally accurate anyway.
 	 */
 	if (action == BLK_NEEDS_REDO && freespace < BLCKSZ / 5)
-		XLogRecordPageWithFreeSpace(target_node, blkno, freespace);
+		XLogRecordPageWithFreeSpace(target_locator, blkno, freespace);
 }
 
 /*
@@ -9195,7 +9203,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_multi_insert *xlrec;
-	RelFileNode rnode;
+	RelFileLocator rlocator;
 	BlockNumber blkno;
 	Buffer		buffer;
 	Page		page;
@@ -9217,7 +9225,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 */
 	xlrec = (xl_heap_multi_insert *) XLogRecGetData(record);
 
-	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &rlocator, NULL, &blkno);
 
 	/* check that the mutually exclusive flags are not both set */
 	Assert(!((xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED) &&
@@ -9229,7 +9237,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 */
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
-		Relation	reln = CreateFakeRelcacheEntry(rnode);
+		Relation	reln = CreateFakeRelcacheEntry(rlocator);
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
@@ -9331,7 +9339,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * totally accurate anyway.
 	 */
 	if (action == BLK_NEEDS_REDO && freespace < BLCKSZ / 5)
-		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
+		XLogRecordPageWithFreeSpace(rlocator, blkno, freespace);
 }
 
 /*
@@ -9342,7 +9350,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_update *xlrec = (xl_heap_update *) XLogRecGetData(record);
-	RelFileNode rnode;
+	RelFileLocator rlocator;
 	BlockNumber oldblk;
 	BlockNumber newblk;
 	ItemPointerData newtid;
@@ -9371,7 +9379,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	oldtup.t_data = NULL;
 	oldtup.t_len = 0;
 
-	XLogRecGetBlockTag(record, 0, &rnode, NULL, &newblk);
+	XLogRecGetBlockTag(record, 0, &rlocator, NULL, &newblk);
 	if (XLogRecGetBlockTagExtended(record, 1, NULL, NULL, &oldblk, NULL))
 	{
 		/* HOT updates are never done across pages */
@@ -9388,7 +9396,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 */
 	if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 	{
-		Relation	reln = CreateFakeRelcacheEntry(rnode);
+		Relation	reln = CreateFakeRelcacheEntry(rlocator);
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, oldblk, &vmbuffer);
@@ -9472,7 +9480,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 */
 	if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 	{
-		Relation	reln = CreateFakeRelcacheEntry(rnode);
+		Relation	reln = CreateFakeRelcacheEntry(rlocator);
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, newblk, &vmbuffer);
@@ -9606,7 +9614,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * totally accurate anyway.
 	 */
 	if (newaction == BLK_NEEDS_REDO && !hot_update && freespace < BLCKSZ / 5)
-		XLogRecordPageWithFreeSpace(rnode, newblk, freespace);
+		XLogRecordPageWithFreeSpace(rlocator, newblk, freespace);
 }
 
 static void
@@ -9662,13 +9670,13 @@ heap_xlog_lock(XLogReaderState *record)
 	 */
 	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 	{
-		RelFileNode rnode;
+		RelFileLocator rlocator;
 		Buffer		vmbuffer = InvalidBuffer;
 		BlockNumber block;
 		Relation	reln;
 
-		XLogRecGetBlockTag(record, 0, &rnode, NULL, &block);
-		reln = CreateFakeRelcacheEntry(rnode);
+		XLogRecGetBlockTag(record, 0, &rlocator, NULL, &block);
+		reln = CreateFakeRelcacheEntry(rlocator);
 
 		visibilitymap_pin(reln, block, &vmbuffer);
 		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN);
@@ -9735,13 +9743,13 @@ heap_xlog_lock_updated(XLogReaderState *record)
 	 */
 	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 	{
-		RelFileNode rnode;
+		RelFileLocator rlocator;
 		Buffer		vmbuffer = InvalidBuffer;
 		BlockNumber block;
 		Relation	reln;
 
-		XLogRecGetBlockTag(record, 0, &rnode, NULL, &block);
-		reln = CreateFakeRelcacheEntry(rnode);
+		XLogRecGetBlockTag(record, 0, &rlocator, NULL, &block);
+		reln = CreateFakeRelcacheEntry(rlocator);
 
 		visibilitymap_pin(reln, block, &vmbuffer);
 		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN);

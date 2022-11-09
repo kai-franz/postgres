@@ -665,7 +665,9 @@ ExecForeignBatchInsert(EState *estate,
 
     <para>
      Note that this function is also called when inserting routed tuples into
-     a foreign-table partition.  See the callback functions
+     a foreign-table partition or executing <command>COPY FROM</command> on
+     a foreign table, in which case it is called in a different way than it
+     is in the <command>INSERT</command> case.  See the callback functions
      described below that allow the FDW to support that.
     </para>
 
@@ -1089,7 +1091,7 @@ ExecForeignTruncate(List *rels,
      requested in the original <command>TRUNCATE</command> command,
      respectively.
     </para>
-    
+
     <para>
      If <literal>restart_seqs</literal> is <literal>true</literal>,
      the original <command>TRUNCATE</command> command requested the

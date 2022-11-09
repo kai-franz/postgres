@@ -19,7 +19,7 @@
 #include "lib/stringinfo.h"
 #include "storage/buf.h"
 #include "storage/bufpage.h"
-#include "storage/relfilenode.h"
+#include "storage/relfilelocator.h"
 #include "utils/relcache.h"
 
 
@@ -370,9 +370,9 @@ typedef struct xl_heap_new_cid
 	CommandId	combocid;		/* just for debugging */
 
 	/*
-	 * Store the relfilenode/ctid pair to facilitate lookups.
+	 * Store the relfilelocator/ctid pair to facilitate lookups.
 	 */
-	RelFileNode target_node;
+	RelFileLocator target_locator;
 	ItemPointerData target_tid;
 } xl_heap_new_cid;
 
@@ -414,8 +414,8 @@ extern bool heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 									  TransactionId *relfrozenxid_out,
 									  MultiXactId *relminmxid_out);
 extern void heap_execute_freeze_tuple(HeapTupleHeader tuple,
-									  xl_heap_freeze_tuple *xlrec_tp);
-extern XLogRecPtr log_heap_visible(RelFileNode rnode, Buffer heap_buffer,
-								   Buffer vm_buffer, TransactionId cutoff_xid, uint8 flags);
+									  xl_heap_freeze_tuple *frz);
+extern XLogRecPtr log_heap_visible(RelFileLocator rlocator, Buffer heap_buffer,
+								   Buffer vm_buffer, TransactionId cutoff_xid, uint8 vmflags);
 
 #endif							/* HEAPAM_XLOG_H */

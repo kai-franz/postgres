@@ -38,9 +38,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#ifdef HAVE_NETINET_TCP_H
 #include <netinet/tcp.h>
-#endif
 #include <arpa/inet.h>
 #endif
 
@@ -70,14 +68,14 @@
 
 static int	verify_cb(int ok, X509_STORE_CTX *ctx);
 static int	openssl_verify_peer_name_matches_certificate_name(PGconn *conn,
-															  ASN1_STRING *name,
+															  ASN1_STRING *name_entry,
 															  char **store_name);
 static int	openssl_verify_peer_name_matches_certificate_ip(PGconn *conn,
 															ASN1_OCTET_STRING *addr_entry,
 															char **store_name);
 static void destroy_ssl_system(void);
 static int	initialize_SSL(PGconn *conn);
-static PostgresPollingStatusType open_client_SSL(PGconn *);
+static PostgresPollingStatusType open_client_SSL(PGconn *conn);
 static char *SSLerrmessage(unsigned long ecode);
 static void SSLerrfree(char *buf);
 static int	PQssl_passwd_cb(char *buf, int size, int rwflag, void *userdata);
@@ -1373,31 +1371,31 @@ initialize_SSL(PGconn *conn)
 		}
 
 		/*
-		 * Refuse to load key files owned by users other than us or root, and
-		 * require no public access to the key file.  If the file is owned by
-		 * us, require mode 0600 or less.  If owned by root, require 0640 or
-		 * less to allow read access through either our gid or a supplementary
-		 * gid that allows us to read system-wide certificates.
+		 * Refuse to load world-readable key files.  We accept root-owned
+		 * files with mode 0640 or less, so that we can access system-wide
+		 * certificates if we have a supplementary group membership that
+		 * allows us to read 'em.  For files with non-root ownership, require
+		 * mode 0600 or less.  We need not check the file's ownership exactly;
+		 * if we're able to read it despite it having such restrictive
+		 * permissions, it must have the right ownership.
 		 *
-		 * Note that similar checks are performed in
+		 * Note: be very careful about tightening these rules.  Some people
+		 * expect, for example, that a client process running as root should
+		 * be able to use a non-root-owned key file.
+		 *
+		 * Note that roughly similar checks are performed in
 		 * src/backend/libpq/be-secure-common.c so any changes here may need
-		 * to be made there as well.
+		 * to be made there as well.  However, this code caters for the case
+		 * of current user == root, while that code does not.
 		 *
 		 * Ideally we would do similar permissions checks on Windows, but it
 		 * is not clear how that would work since Unix-style permissions may
 		 * not be available.
 		 */
 #if !defined(WIN32) && !defined(__CYGWIN__)
-		if (buf.st_uid != geteuid() && buf.st_uid != 0)
-		{
-			appendPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("private key file \"%s\" must be owned by the current user or root\n"),
-							  fnbuf);
-			return -1;
-		}
-
-		if ((buf.st_uid == geteuid() && buf.st_mode & (S_IRWXG | S_IRWXO)) ||
-			(buf.st_uid == 0 && buf.st_mode & (S_IWGRP | S_IXGRP | S_IRWXO)))
+		if (buf.st_uid == 0 ?
+			buf.st_mode & (S_IWGRP | S_IXGRP | S_IRWXO) :
+			buf.st_mode & (S_IRWXG | S_IRWXO))
 		{
 			appendPQExpBuffer(&conn->errorMessage,
 							  libpq_gettext("private key file \"%s\" has group or world access; file must have permissions u=rw (0600) or less if owned by the current user, or permissions u=rw,g=r (0640) or less if owned by root\n"),
@@ -1732,7 +1730,7 @@ PQsslStruct(PGconn *conn, const char *struct_name)
 const char *const *
 PQsslAttributeNames(PGconn *conn)
 {
-	static const char *const result[] = {
+	static const char *const openssl_attrs[] = {
 		"library",
 		"key_bits",
 		"cipher",
@@ -1740,20 +1738,38 @@ PQsslAttributeNames(PGconn *conn)
 		"protocol",
 		NULL
 	};
+	static const char *const empty_attrs[] = {NULL};
 
-	return result;
+	if (!conn)
+	{
+		/* Return attributes of default SSL library */
+		return openssl_attrs;
+	}
+
+	/* No attrs for unencrypted connection */
+	if (conn->ssl == NULL)
+		return empty_attrs;
+
+	return openssl_attrs;
 }
 
 const char *
 PQsslAttribute(PGconn *conn, const char *attribute_name)
 {
-	if (strcmp(attribute_name, "library") == 0)
-		return "OpenSSL";
-
 	if (!conn)
+	{
+		/* PQsslAttribute(NULL, "library") reports the default SSL library */
+		if (strcmp(attribute_name, "library") == 0)
+			return "OpenSSL";
 		return NULL;
+	}
+
+	/* All attributes read as NULL for a non-encrypted connection */
 	if (conn->ssl == NULL)
 		return NULL;
+
+	if (strcmp(attribute_name, "library") == 0)
+		return "OpenSSL";
 
 	if (strcmp(attribute_name, "key_bits") == 0)
 	{
@@ -1938,7 +1954,7 @@ err:
 int
 PQdefaultSSLKeyPassHook_OpenSSL(char *buf, int size, PGconn *conn)
 {
-	if (conn->sslpassword)
+	if (conn && conn->sslpassword)
 	{
 		if (strlen(conn->sslpassword) + 1 > size)
 			fprintf(stderr, libpq_gettext("WARNING: sslpassword truncated\n"));

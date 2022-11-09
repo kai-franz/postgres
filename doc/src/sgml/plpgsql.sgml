@@ -3778,7 +3778,7 @@ RAISE ;
 
    <para>
     After <replaceable class="parameter">level</replaceable> if any,
-    you can write a <replaceable class="parameter">format</replaceable>
+    you can specify a <replaceable class="parameter">format</replaceable> string
     (which must be a simple string literal, not an expression).  The
     format string specifies the error message text to be reported.
     The format string can be followed
@@ -5278,13 +5278,13 @@ a_output := a_output || $$ if v_$$ || referrer_keys.kind || $$ like '$$
       <term><varname>strict_multi_assignment</varname></term>
       <listitem>
        <para>
-        Some <application>PL/PgSQL</application> commands allow assigning
+        Some <application>PL/pgSQL</application> commands allow assigning
         values to more than one variable at a time, such as
         <command>SELECT INTO</command>.  Typically, the number of target
         variables and the number of source variables should match, though
-        <application>PL/PgSQL</application> will use <literal>NULL</literal>
+        <application>PL/pgSQL</application> will use <literal>NULL</literal>
         for missing values and extra variables are ignored.  Enabling this
-        check will cause <application>PL/PgSQL</application> to throw a
+        check will cause <application>PL/pgSQL</application> to throw a
         <literal>WARNING</literal> or <literal>ERROR</literal> whenever the
         number of target variables and the number of source variables are
         different.
@@ -5296,7 +5296,7 @@ a_output := a_output || $$ if v_$$ || referrer_keys.kind || $$ like '$$
       <term><varname>too_many_rows</varname></term>
       <listitem>
        <para>
-        Enabling this check will cause <application>PL/PgSQL</application> to
+        Enabling this check will cause <application>PL/pgSQL</application> to
         check if a given query returns more than one row when an
         <literal>INTO</literal> clause is used.  As an <literal>INTO</literal>
         statement will only ever use one row, having a query return multiple
@@ -5352,9 +5352,9 @@ WARNING:  number of source and target fields in assignment does not match
 DETAIL:  strict_multi_assignment check of extra_warnings is active.
 HINT:  Make sure the query returns the exact list of columns.
 
- foo 
+ foo
 -----
- 
+
 (1 row)
 </programlisting>
    </para>

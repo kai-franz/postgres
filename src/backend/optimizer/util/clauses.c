@@ -28,7 +28,6 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "executor/functions.h"
-#include "executor/execExpr.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -51,9 +50,6 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
-#include "utils/json.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -385,45 +381,6 @@ contain_mutable_functions_walker(Node *node, void *context)
 	if (check_functions_in_node(node, contain_mutable_functions_checker,
 								context))
 		return true;
-
-	if (IsA(node, JsonConstructorExpr))
-	{
-		const JsonConstructorExpr *ctor = (JsonConstructorExpr *) node;
-		ListCell   *lc;
-		bool		is_jsonb =
-			ctor->returning->format->format_type == JS_FORMAT_JSONB;
-
-		/* Check argument_type => json[b] conversions */
-		foreach(lc, ctor->args)
-		{
-			Oid			typid = exprType(lfirst(lc));
-
-			if (is_jsonb ?
-				!to_jsonb_is_immutable(typid) :
-				!to_json_is_immutable(typid))
-				return true;
-		}
-
-		/* Check all subnodes */
-	}
-
-	if (IsA(node, JsonExpr))
-	{
-		JsonExpr   *jexpr = castNode(JsonExpr, node);
-		Const	   *cnst;
-
-		if (!IsA(jexpr->path_spec, Const))
-			return true;
-
-		cnst = castNode(Const, jexpr->path_spec);
-
-		Assert(cnst->consttype == JSONPATHOID);
-		if (cnst->constisnull)
-			return false;
-
-		return jspIsMutable(DatumGetJsonPathP(cnst->constvalue),
-							jexpr->passing_names, jexpr->passing_values);
-	}
 
 	if (IsA(node, SQLValueFunction))
 	{
@@ -894,18 +851,6 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 		return query_tree_walker(query,
 								 max_parallel_hazard_walker,
 								 context, 0);
-	}
-
-	/* JsonExpr is parallel-unsafe if subtransactions can be used. */
-	else if (IsA(node, JsonExpr))
-	{
-		JsonExpr  *jsexpr = (JsonExpr *) node;
-
-		if (ExecEvalJsonNeedsSubTransaction(jsexpr, NULL))
-		{
-			context->max_hazard = PROPARALLEL_UNSAFE;
-			return true;
-		}
 	}
 
 	/* Recurse to check arguments */
@@ -1566,6 +1511,31 @@ find_nonnullable_rels_walker(Node *node, bool top_level)
 			 expr->booltesttype == IS_NOT_UNKNOWN))
 			result = find_nonnullable_rels_walker((Node *) expr->arg, false);
 	}
+	else if (IsA(node, SubPlan))
+	{
+		SubPlan    *splan = (SubPlan *) node;
+
+		/*
+		 * For some types of SubPlan, we can infer strictness from Vars in the
+		 * testexpr (the LHS of the original SubLink).
+		 *
+		 * For ANY_SUBLINK, if the subquery produces zero rows, the result is
+		 * always FALSE.  If the subquery produces more than one row, the
+		 * per-row results of the testexpr are combined using OR semantics.
+		 * Hence ANY_SUBLINK can be strict only at top level, but there it's
+		 * as strict as the testexpr is.
+		 *
+		 * For ROWCOMPARE_SUBLINK, if the subquery produces zero rows, the
+		 * result is always NULL.  Otherwise, the result is as strict as the
+		 * testexpr is.  So we can check regardless of top_level.
+		 *
+		 * We can't prove anything for other sublink types (in particular,
+		 * note that ALL_SUBLINK will return TRUE if the subquery is empty).
+		 */
+		if ((top_level && splan->subLinkType == ANY_SUBLINK) ||
+			splan->subLinkType == ROWCOMPARE_SUBLINK)
+			result = find_nonnullable_rels_walker(splan->testexpr, top_level);
+	}
 	else if (IsA(node, PlaceHolderVar))
 	{
 		PlaceHolderVar *phv = (PlaceHolderVar *) node;
@@ -1790,6 +1760,15 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 			 expr->booltesttype == IS_FALSE ||
 			 expr->booltesttype == IS_NOT_UNKNOWN))
 			result = find_nonnullable_vars_walker((Node *) expr->arg, false);
+	}
+	else if (IsA(node, SubPlan))
+	{
+		SubPlan    *splan = (SubPlan *) node;
+
+		/* See analysis in find_nonnullable_rels_walker */
+		if ((top_level && splan->subLinkType == ANY_SUBLINK) ||
+			splan->subLinkType == ROWCOMPARE_SUBLINK)
+			result = find_nonnullable_vars_walker(splan->testexpr, top_level);
 	}
 	else if (IsA(node, PlaceHolderVar))
 	{
@@ -2172,7 +2151,8 @@ eval_const_expressions(PlannerInfo *root, Node *node)
  *
  * We'll use a hash table if all of the following conditions are met:
  * 1. The 2nd argument of the array contain only Consts.
- * 2. useOr is true.
+ * 2. useOr is true or there is a valid negator operator for the
+ *	  ScalarArrayOpExpr's opno.
  * 3. There's valid hash function for both left and righthand operands and
  *	  these hash functions are the same.
  * 4. If the array contains enough elements for us to consider it to be
@@ -3567,29 +3547,6 @@ eval_const_expressions_mutator(Node *node,
 					return ece_evaluate_expr((Node *) newcre);
 				return (Node *) newcre;
 			}
-		case T_JsonValueExpr:
-			{
-				JsonValueExpr *jve = (JsonValueExpr *) node;
-				Node	   *raw = eval_const_expressions_mutator((Node *) jve->raw_expr,
-																 context);
-
-				if (raw && IsA(raw, Const))
-				{
-					Node	   *formatted;
-					Node	   *save_case_val = context->case_val;
-
-					context->case_val = raw;
-
-					formatted = eval_const_expressions_mutator((Node *) jve->formatted_expr,
-																context);
-
-					context->case_val = save_case_val;
-
-					if (formatted && IsA(formatted, Const))
-						return formatted;
-				}
-				break;
-			}
 		default:
 			break;
 	}
@@ -4540,16 +4497,16 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	if (!isNull)
 	{
 		Node	   *n;
-		List	   *querytree_list;
+		List	   *query_list;
 
 		n = stringToNode(TextDatumGetCString(tmp));
 		if (IsA(n, List))
-			querytree_list = linitial_node(List, castNode(List, n));
+			query_list = linitial_node(List, castNode(List, n));
 		else
-			querytree_list = list_make1(n);
-		if (list_length(querytree_list) != 1)
+			query_list = list_make1(n);
+		if (list_length(query_list) != 1)
 			goto fail;
-		querytree = linitial(querytree_list);
+		querytree = linitial(query_list);
 
 		/*
 		 * Because we'll insist below that the querytree have an empty rtable
@@ -5315,7 +5272,7 @@ pull_paramids_walker(Node *node, Bitmapset **context)
 		return false;
 	if (IsA(node, Param))
 	{
-		Param	   *param = (Param *)node;
+		Param	   *param = (Param *) node;
 
 		*context = bms_add_member(*context, param->paramid);
 		return false;

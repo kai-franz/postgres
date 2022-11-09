@@ -142,14 +142,15 @@ BEGIN
 	# Must be set early
 	$windows_os = $Config{osname} eq 'MSWin32' || $Config{osname} eq 'msys';
 	# Check if this environment is MSYS2.
-	$is_msys2 = $windows_os && -x '/usr/bin/uname'  &&
-	  `uname -or` =~ /^[2-9].*Msys/;
+	$is_msys2 =
+	     $windows_os
+	  && -x '/usr/bin/uname'
+	  && `uname -or` =~ /^[2-9].*Msys/;
 
 	if ($windows_os)
 	{
 		require Win32API::File;
-		Win32API::File->import(
-			qw(createFile OsFHandleOpen CloseHandle));
+		Win32API::File->import(qw(createFile OsFHandleOpen CloseHandle));
 	}
 
 	# Specifies whether to use Unix sockets for test setups.  On
@@ -188,11 +189,11 @@ INIT
 	# test may still fail, but it's more likely to report useful facts.
 	$SIG{PIPE} = 'IGNORE';
 
-	# Determine output directories, and create them.  The base path is the
-	# TESTDIR environment variable, which is normally set by the invoking
-	# Makefile.
-	$tmp_check = $ENV{TESTDIR} ? "$ENV{TESTDIR}/tmp_check" : "tmp_check";
-	$log_path = "$tmp_check/log";
+	# Determine output directories, and create them.  The base paths are the
+	# TESTDATADIR / TESTLOGDIR environment variables, which are normally set
+	# by the invoking Makefile.
+	$tmp_check = $ENV{TESTDATADIR} ? "$ENV{TESTDATADIR}" : "tmp_check";
+	$log_path = $ENV{TESTLOGDIR} ? "$ENV{TESTLOGDIR}" : "log";
 
 	mkdir $tmp_check;
 	mkdir $log_path;
@@ -428,12 +429,16 @@ sub pump_until
 		last if $$stream =~ /$until/;
 		if ($timeout->is_expired)
 		{
-			diag("pump_until: timeout expired when searching for \"$until\" with stream: \"$$stream\"");
+			diag(
+				"pump_until: timeout expired when searching for \"$until\" with stream: \"$$stream\""
+			);
 			return 0;
 		}
 		if (not $proc->pumpable())
 		{
-			diag("pump_until: process terminated unexpectedly when searching for \"$until\" with stream: \"$$stream\"");
+			diag(
+				"pump_until: process terminated unexpectedly when searching for \"$until\" with stream: \"$$stream\""
+			);
 			return 0;
 		}
 		$proc->pump();
