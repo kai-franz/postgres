@@ -1,0 +1,1 @@
+./configure --with-llvm --prefix=$HOME/my_postgres LLVM_CONFIG='/usr/bin/llvm-config-13'

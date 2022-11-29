@@ -1,0 +1,1 @@
+$HOME/my_postgres/bin/pg_ctl -D $HOME/my_postgres/data -l $HOME/CLionProjects/postgres_jit_project/logfile_pcq start
