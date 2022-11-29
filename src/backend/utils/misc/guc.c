@@ -51,6 +51,7 @@
 #include "commands/vacuum.h"
 #include "commands/variable.h"
 #include "common/string.h"
+#include "executor/vector.h"
 #include "funcapi.h"
 #include "jit/jit.h"
 #include "libpq/auth.h"
@@ -2110,6 +2111,15 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
+
+    {
+        {"enable_vector", PGC_USERSET, QUERY_TUNING_METHOD,
+         gettext_noop("Enables vectorized exeuction."), NULL, GUC_EXPLAIN
+        },
+        &enable_vector,
+        false,
+        NULL, NULL, NULL
+    },
 
 	/* End-of-list marker */
 	{

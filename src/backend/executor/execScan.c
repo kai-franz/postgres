@@ -19,10 +19,11 @@
 #include "postgres.h"
 
 #include "executor/executor.h"
+#include "executor/vector.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
-
+bool enable_vector = false;
 
 /*
  * ExecScanFetch -- check interrupts & fetch next potential tuple
