@@ -458,6 +458,8 @@ typedef bool (*ExecScanRecheckMtd) (ScanState *node, TupleTableSlot *slot);
 
 extern TupleTableSlot *ExecScan(ScanState *node, ExecScanAccessMtd accessMtd,
 								ExecScanRecheckMtd recheckMtd);
+extern TupleTableSlot *ExecScanVectorized(ScanState *node, ExecScanAccessMtd accessMtd,
+                                ExecScanRecheckMtd recheckMtd);
 extern void ExecAssignScanProjectionInfo(ScanState *node);
 extern void ExecAssignScanProjectionInfoWithVarno(ScanState *node, Index varno);
 extern void ExecScanReScan(ScanState *node);

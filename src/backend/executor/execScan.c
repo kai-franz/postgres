@@ -23,7 +23,8 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
-bool enable_vector = false;
+#define VECTOR_SIZE 1024
+
 
 /*
  * ExecScanFetch -- check interrupts & fetch next potential tuple
@@ -254,6 +255,193 @@ ExecScan(ScanState *node,
 		 */
 		ResetExprContext(econtext);
 	}
+}
+
+/* ----------------------------------------------------------------
+ *		ExecScanVectorized
+ *
+ *		Vectorized version of ExecScan.
+ * ----------------------------------------------------------------
+ */
+TupleTableSlot *
+ExecScanVectorized(ScanState *node,
+                   ExecScanAccessMtd accessMtd,	/* function returning a tuple */
+                   ExecScanRecheckMtd recheckMtd)
+{
+  ExprContext *econtext;
+  ExprState  *qual;
+  ProjectionInfo *projInfo;
+  bool		eof_tuplestore;
+  bool qual_results[VECTOR_SIZE];
+
+  /*
+   * Fetch data from node
+   */
+  qual = node->ps.qual;
+  projInfo = node->ps.ps_ProjInfo;
+  econtext = node->ps.ps_ExprContext;
+  Tuplestorestate *tuplestorestate;
+
+  tuplestorestate = node->tuplestorestate;
+
+  /* interrupt checks are in ExecScanFetch */
+
+  /*
+   * If first time through, and we need a tuplestore, initialize it.
+   */
+  if (tuplestorestate == NULL)
+  {
+    tuplestorestate = tuplestore_begin_heap(true, false, work_mem);
+//    if (node->eflags & EXEC_FLAG_MARK)
+//    {
+//      /*
+//       * Allocate a second read pointer to serve as the mark. We know it
+//       * must have index 1, so needn't store that.
+//       */
+//      int			ptrno PG_USED_FOR_ASSERTS_ONLY;
+//
+//      ptrno = tuplestore_alloc_read_pointer(tuplestorestate,
+//                                            node->eflags);
+//      Assert(ptrno == 1);
+//    }
+    node->tuplestorestate = tuplestorestate;
+    eof_tuplestore = true;
+  } else {
+    eof_tuplestore = node->tupleStorePos == node->tupleStoreSize;
+  }
+
+
+
+  /**
+   * If we aren't at the end of the tuplestore, advance the read pointer
+   * to the next tuple that satisfies the qual (or the end of the tuplestore, if no such tuple exists).
+   */
+  if (!eof_tuplestore && qual && !qual_results[node->tupleStorePos]) {
+    int prevTupleStorePos = node->tupleStorePos;
+    while (node->tupleStorePos < node->tupleStoreSize && !qual_results[node->tupleStorePos]) {
+      node->tupleStorePos++;
+    }
+    if (node->tupleStorePos < node->tupleStoreSize) {
+      int delta = node->tupleStorePos - prevTupleStorePos;
+      InstrCountFiltered1(node, delta);
+      tuplestore_skiptuples(tuplestorestate, delta, true);
+    } else {
+      eof_tuplestore = true;
+    }
+  }
+
+  while (eof_tuplestore) {
+    /*
+     * Nothing more to scan, so return an empty slot, being careful to use
+     * the projection result slot so it has correct tupleDesc.
+     */
+    if (node->eof_underlying) {
+      if (projInfo)
+        return ExecClearTuple(projInfo->pi_state.resultslot);
+      else
+        return NULL;
+    }
+
+    /*
+     * Fill the vector with tuples from the underlying node.
+     */
+    tuplestore_clear(tuplestorestate);
+    int tupleStoreSize = 0;
+    bool eof_underlying = false;
+    elog(LOG, "Filling vector");
+    while (tupleStoreSize < VECTOR_SIZE && !eof_underlying) {
+      TupleTableSlot *slot;
+      slot = ExecScanFetch(node, accessMtd, recheckMtd);
+      if (TupIsNull(slot)) {
+          eof_underlying = true;
+          elog(LOG, "Underlying node is empty");
+          continue;
+      } else {
+        tuplestore_puttupleslot(tuplestorestate, slot);
+        tupleStoreSize++;
+      }
+    }
+    node->eof_underlying = eof_underlying;
+    node->tupleStoreSize = tupleStoreSize;
+
+    /*
+     * Reset the read pointer to the start of the tuplestore.
+     */
+    tuplestore_rescan(tuplestorestate);
+
+    node->tupleStorePos = -1;
+    /*
+     * Evaluate the qual clause for each tuple in the tuplestore.
+     */
+    if (qual) {
+      TupleTableSlot *slot;
+      slot = node->ps.ps_ResultTupleSlot;
+      for (int i = 0; i < tupleStoreSize; i++) {
+        tuplestore_gettupleslot(tuplestorestate, true, true, slot);
+        econtext->ecxt_scantuple = slot;
+        qual_results[i] = (bool) ExecQual(qual, econtext);
+        ResetExprContext(econtext);
+        if (qual_results[i] && node->tupleStorePos == -1) {
+          node->tupleStorePos = i;
+        }
+      }
+      /*
+       * Reset the read pointer to the start of the tuplestore.
+       */
+      tuplestore_rescan(tuplestorestate);
+      if (node->tupleStorePos >= 0) {
+        tuplestore_skiptuples(tuplestorestate, node->tupleStorePos, true);
+      }
+    } else {
+      node->tupleStorePos = 0;
+    }
+    /*
+     * If none of the tuples in the tuplestore satisfy the qual clause, then
+     * discard the current vector and try again.
+     */
+    eof_tuplestore = node->tupleStorePos == -1;
+    if (eof_tuplestore) {
+      elog(LOG, "Vector contains no qualifying tuples");
+    }
+  }
+
+
+
+//  /*
+//   * Reset per-tuple memory context to free any expression evaluation
+//   * storage allocated in the previous tuple cycle.
+//   */
+//  ResetExprContext(econtext);
+
+  /*
+   * If we reach this point, there is at least one tuple in the vector that satisfies the qual clause.
+   * This will be the next tuple returned by the tuple store; return this tuple.
+   */
+  TupleTableSlot *slot;
+  slot = node->ps.ps_ResultTupleSlot;
+  tuplestore_gettupleslot(tuplestorestate, true, true, slot);
+  elog(LOG, "Returning tuple %d", node->tupleStorePos);
+  node->tupleStorePos++;
+  econtext->ecxt_scantuple = slot;
+  Assert(!TupIsNull(slot));
+  if (projInfo) {
+    /*
+     * Form a projection tuple, store it in the result tuple slot
+     * and return it.
+     */
+    ResetExprContext(econtext);
+    bool qualPassed = ExecQual(qual, econtext);
+    Assert(qualPassed);
+    Assert(false);
+    TupleTableSlot *projectedSlot = ExecProject(projInfo);
+    Assert(!TupIsNull(projectedSlot));
+    return projectedSlot;
+  } else {
+    /*
+     * Here, we aren't projecting, so just return scan tuple.
+     */
+    return slot;
+  }
 }
 
 /*

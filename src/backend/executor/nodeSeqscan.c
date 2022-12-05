@@ -32,6 +32,9 @@
 #include "executor/execdebug.h"
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
+#include "executor/vector.h"
+
+bool enable_vector = false;
 
 static TupleTableSlot *SeqNext(SeqScanState *node);
 
@@ -109,6 +112,11 @@ ExecSeqScan(PlanState *pstate)
 {
 	SeqScanState *node = castNode(SeqScanState, pstate);
 
+    if (enable_vector) {
+      elog(LOG, "SeqScanVectorized called");
+      return ExecScanVectorized(&node->ss, (ExecScanAccessMtd) SeqNext, (ExecScanRecheckMtd) SeqRecheck);
+    }
+
 	return ExecScan(&node->ss,
 					(ExecScanAccessMtd) SeqNext,
 					(ExecScanRecheckMtd) SeqRecheck);
@@ -138,6 +146,10 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
 	scanstate->ss.ps.ExecProcNode = ExecSeqScan;
+    scanstate->ss.tuplestorestate = NULL;
+    if (enable_vector) {
+      ExecInitResultTupleSlotTL(&scanstate->ss.ps, &TTSOpsMinimalTuple);
+    }
 
 	/*
 	 * Miscellaneous initialization
@@ -207,6 +219,13 @@ ExecEndSeqScan(SeqScanState *node)
 	 */
 	if (scanDesc != NULL)
 		table_endscan(scanDesc);
+
+    /*
+     * Release tuplestore resources
+     */
+    if (node->ss.tuplestorestate != NULL)
+      tuplestore_end(node->ss.tuplestorestate);
+    node->ss.tuplestorestate = NULL;
 }
 
 /* ----------------------------------------------------------------

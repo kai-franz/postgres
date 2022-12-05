@@ -1378,6 +1378,10 @@ typedef struct ScanState
 	Relation	ss_currentRelation;
 	struct TableScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
+    Tuplestorestate *tuplestorestate;
+    int        tupleStorePos;
+    int        tupleStoreSize;
+    bool		eof_underlying; /* reached end of underlying plan? */
 } ScanState;
 
 /* ----------------
