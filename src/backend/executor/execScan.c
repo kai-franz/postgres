@@ -281,37 +281,6 @@ ExecScanVectorized(ScanState *node,
   projInfo = node->ps.ps_ProjInfo;
   econtext = node->ps.ps_ExprContext;
   qual_results = &node->qual_results;
-  Tuplestorestate *tuplestorestate;
-
-  tuplestorestate = node->tuplestorestate;
-
-  /* interrupt checks are in ExecScanFetch */
-
-  /*
-   * If first time through, and we need a tuplestore, initialize it.
-   */
-  if (tuplestorestate == NULL)
-  {
-    tuplestorestate = tuplestore_begin_heap(true, false, work_mem);
-//    if (node->eflags & EXEC_FLAG_MARK)
-//    {
-//      /*
-//       * Allocate a second read pointer to serve as the mark. We know it
-//       * must have index 1, so needn't store that.
-//       */
-//      int			ptrno PG_USED_FOR_ASSERTS_ONLY;
-//
-//      ptrno = tuplestore_alloc_read_pointer(tuplestorestate,
-//                                            node->eflags);
-//      Assert(ptrno == 1);
-//    }
-    node->tuplestorestate = tuplestorestate;
-    eof_tuplestore = true;
-  } else {
-    eof_tuplestore = node->tupleStorePos == node->tupleStoreSize;
-  }
-
-
 
   /**
    * If we aren't at the end of the tuplestore, advance the read pointer
@@ -325,7 +294,6 @@ ExecScanVectorized(ScanState *node,
     if (node->tupleStorePos < node->tupleStoreSize) {
       int delta = node->tupleStorePos - prevTupleStorePos;
       InstrCountFiltered1(node, delta);
-      tuplestore_skiptuples(tuplestorestate, delta, true);
     } else {
       eof_tuplestore = true;
     }
@@ -346,24 +314,23 @@ ExecScanVectorized(ScanState *node,
     /*
      * Fill the vector with tuples from the underlying node.
      */
-    tuplestore_clear(tuplestorestate);
     int tupleStoreSize = 0;
     bool eof_underlying = false;
-    elog(LOG, "Filling vector");
+//    elog(LOG, "Filling vector");
     while (tupleStoreSize < VECTOR_SIZE && !eof_underlying) {
       TupleTableSlot *slot;
       ResetExprContext(econtext);
       slot = ExecScanFetch(node, accessMtd, recheckMtd);
       if (TupIsNull(slot)) {
           eof_underlying = true;
-          elog(LOG, "Underlying node is empty");
+//          elog(LOG, "Underlying node is empty");
           break;
       } else {
         econtext->ecxt_scantuple = slot;
         if (qual) {
           qual_results[tupleStoreSize] = ExecQual(qual, econtext);
         }
-        tuplestore_puttupleslot(tuplestorestate, slot);
+        node->tuples[tupleStoreSize] = slot;
         tupleStoreSize++;
       }
     }
@@ -373,7 +340,6 @@ ExecScanVectorized(ScanState *node,
     /*
      * Reset the read pointer to the start of the tuplestore.
      */
-    tuplestore_rescan(tuplestorestate);
 
     node->tupleStorePos = -1;
     /*
@@ -385,13 +351,6 @@ ExecScanVectorized(ScanState *node,
           node->tupleStorePos = i;
         }
       }
-      /*
-       * Reset the read pointer to the start of the tuplestore.
-       */
-      tuplestore_rescan(tuplestorestate);
-      if (node->tupleStorePos >= 0) {
-        tuplestore_skiptuples(tuplestorestate, node->tupleStorePos, true);
-      }
     } else {
       node->tupleStorePos = 0;
     }
@@ -400,9 +359,9 @@ ExecScanVectorized(ScanState *node,
      * discard the current vector and try again.
      */
     eof_tuplestore = node->tupleStorePos == -1;
-    if (eof_tuplestore) {
-      elog(LOG, "Vector contains no qualifying tuples");
-    }
+//    if (eof_tuplestore) {
+//      elog(LOG, "Vector contains no qualifying tuples");
+//    }
   }
 
 
@@ -418,9 +377,8 @@ ExecScanVectorized(ScanState *node,
    * This will be the next tuple returned by the tuple store; return this tuple.
    */
   TupleTableSlot *slot;
-  slot = node->ps.ps_ResultTupleSlot;
-  tuplestore_gettupleslot(tuplestorestate, true, true, slot);
-  elog(LOG, "Returning tuple %d", node->tupleStorePos);
+  slot = node->tuples[node->tupleStorePos];
+//  elog(LOG, "Returning tuple %d", node->tupleStorePos);
   node->tupleStorePos++;
   econtext->ecxt_scantuple = slot;
   Assert(!TupIsNull(slot));
@@ -430,7 +388,6 @@ ExecScanVectorized(ScanState *node,
      * and return it.
      */
     ResetExprContext(econtext);
-    bool qualPassed = ExecQual(qual, econtext);
     Assert(qualPassed);
     Assert(false);
     TupleTableSlot *projectedSlot = ExecProject(projInfo);
