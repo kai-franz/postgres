@@ -272,7 +272,7 @@ ExecScanVectorized(ScanState *node,
   ExprState  *qual;
   ProjectionInfo *projInfo;
   bool		eof_tuplestore;
-  bool qual_results[VECTOR_SIZE];
+  bool *qual_results;
 
   /*
    * Fetch data from node
@@ -280,6 +280,7 @@ ExecScanVectorized(ScanState *node,
   qual = node->ps.qual;
   projInfo = node->ps.ps_ProjInfo;
   econtext = node->ps.ps_ExprContext;
+  qual_results = &node->qual_results;
   Tuplestorestate *tuplestorestate;
 
   tuplestorestate = node->tuplestorestate;
@@ -351,12 +352,17 @@ ExecScanVectorized(ScanState *node,
     elog(LOG, "Filling vector");
     while (tupleStoreSize < VECTOR_SIZE && !eof_underlying) {
       TupleTableSlot *slot;
+      ResetExprContext(econtext);
       slot = ExecScanFetch(node, accessMtd, recheckMtd);
       if (TupIsNull(slot)) {
           eof_underlying = true;
           elog(LOG, "Underlying node is empty");
-          continue;
+          break;
       } else {
+        econtext->ecxt_scantuple = slot;
+        if (qual) {
+          qual_results[tupleStoreSize] = ExecQual(qual, econtext);
+        }
         tuplestore_puttupleslot(tuplestorestate, slot);
         tupleStoreSize++;
       }
@@ -374,13 +380,7 @@ ExecScanVectorized(ScanState *node,
      * Evaluate the qual clause for each tuple in the tuplestore.
      */
     if (qual) {
-      TupleTableSlot *slot;
-      slot = node->ps.ps_ResultTupleSlot;
       for (int i = 0; i < tupleStoreSize; i++) {
-        tuplestore_gettupleslot(tuplestorestate, true, true, slot);
-        econtext->ecxt_scantuple = slot;
-        qual_results[i] = (bool) ExecQual(qual, econtext);
-        ResetExprContext(econtext);
         if (qual_results[i] && node->tupleStorePos == -1) {
           node->tupleStorePos = i;
         }

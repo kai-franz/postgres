@@ -1381,6 +1381,7 @@ typedef struct ScanState
     Tuplestorestate *tuplestorestate;
     int        tupleStorePos;
     int        tupleStoreSize;
+    bool qual_results[1024];
     bool		eof_underlying; /* reached end of underlying plan? */
 } ScanState;
 
